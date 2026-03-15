@@ -1559,58 +1559,9 @@ auto translate_fcom(TranslationResult* a1, IRInstr* a2) -> void {
     // 9 instructions, fully branchless — eliminates 3 conditional branches
     // that cause ~14-cycle misprediction stalls on Apple M-series.
 
-    const int Wd_cc = alloc_free_gpr(*a1);   // CC flag result
-    const int Wd_vs = alloc_free_gpr(*a1);   // VS flag result
-
-    // Extract individual flag conditions (all 3 must precede MSR)
-    emit_cset(buf, /*is_64bit=*/0, /*CC=*/3, Wd_cc);   // 1 if carry clear (LT)
-    emit_cset(buf, /*is_64bit=*/0, /*VS=*/6, Wd_vs);   // 1 if overflow (UN)
-    emit_cset(buf, /*is_64bit=*/0, /*EQ=*/0, Wd_tmp);  // 1 if equal
-
-    // MSR NZCV, Wd_tmp2 — restore saved x86 EFLAGS (all CSETs done)
-    emit_msr_nzcv(buf, Wd_tmp2);
-
-    free_gpr(*a1, Wd_tmp2);
-
-    // C0 = CC | VS
-    emit_logical_shifted_reg(buf, 0, /*ORR*/1, 0, /*LSL*/0, Wd_vs, 0, Wd_cc, Wd_cc);
-    // C3 = EQ | VS
-    emit_logical_shifted_reg(buf, 0, /*ORR*/1, 0, /*LSL*/0, Wd_vs, 0, Wd_tmp, Wd_tmp);
-
-    // Pack: Wd_tmp = (C0 << 8) | (C2 << 10) | (C3 << 14)
-    // Step 1: C0 << 8
-    emit_bitfield(buf, /*is_64=*/0, /*UBFM=*/2, /*N=*/0,
-                  /*immr=*/24, /*imms=*/23, Wd_cc, Wd_cc);  // LSL #8
-    // Step 2: ORR with C2(=VS) << 10
-    emit_logical_shifted_reg(buf, 0, /*ORR*/1, 0, /*LSL*/0, Wd_vs, 10, Wd_cc, Wd_cc);
-    // Step 3: ORR with C3 << 14, result in Wd_tmp
-    emit_logical_shifted_reg(buf, 0, /*ORR*/1, 0, /*LSL*/0, Wd_tmp, 14, Wd_cc, Wd_tmp);
-
-    free_gpr(*a1, Wd_vs);
-    free_gpr(*a1, Wd_cc);
-
-    // Wd_tmp holds the new CC bits (0x0000 / 0x0100 / 0x4000 / 0x4500).
-    // RMW status_word: load, clear C0|C2|C3, OR in new bits, store.
-    {
-        const int Wd_sw = alloc_free_gpr(*a1);
-
-        // LDRH Wd_sw, [Xbase, #0x02]
-        emit_ldr_str_imm(buf, 1, 0, 1, kX87StatusWordImm12, Xbase, Wd_sw);
-
-        // OPT-F1: Clear bits [10:8] (C0, C1, C2) with a single BFI, then bit 14 (C3).
-        // C1 (bit 9) is "cleared" per Intel SDM for all FCOM variants.
-        // BFI from XZR, lsb=8, width=3 → immr=(32-8)%32=24, imms=2
-        emit_bitfield(buf, 0, 1, 0, 24, 2, GPR::XZR, Wd_sw);   // clear bits [10:8]
-        emit_bitfield(buf, 0, 1, 0, 18, 0, GPR::XZR, Wd_sw);   // clear bit 14
-
-        // ORR Wd_sw, Wd_sw, Wd_tmp
-        emit_logical_shifted_reg(buf, 0, 1, 0, 0, Wd_tmp, 0, Wd_sw, Wd_sw);
-
-        // STRH Wd_sw, [Xbase, #0x02]
-        emit_ldr_str_imm(buf, 1, 0, 0, kX87StatusWordImm12, Xbase, Wd_sw);
-
-        free_gpr(*a1, Wd_sw);
-    }
+    // OPT-L: Branchless FCMP NZCV → packed x87 CC bits + RMW status_word.
+    emit_fcom_cc_pack(buf, *a1, Wd_tmp, Wd_tmp2);
+    emit_fcom_cc_write_sw(buf, *a1, Xbase, Wd_tmp);
 
     // Step 5: pop the stack as required.
     // Wd_tmp is dead after the status_word store — safe to reuse as RMW scratch.
@@ -2580,44 +2531,9 @@ auto translate_ftst(TranslationResult* a1, IRInstr* /*a2*/) -> void {
 
     free_fpr(*a1, Dd_st0);
 
-    // Branchless flag mapping (same as translate_fcom)
-    const int Wd_cc = alloc_free_gpr(*a1);
-    const int Wd_vs = alloc_free_gpr(*a1);
-
-    emit_cset(buf, /*is_64bit=*/0, /*CC=*/3, Wd_cc);   // 1 if carry clear (LT)
-    emit_cset(buf, /*is_64bit=*/0, /*VS=*/6, Wd_vs);   // 1 if overflow (UN)
-    emit_cset(buf, /*is_64bit=*/0, /*EQ=*/0, Wd_tmp);  // 1 if equal
-
-    // MSR NZCV, Wd_tmp2 — restore saved flags
-    emit_msr_nzcv(buf, Wd_tmp2);
-
-    free_gpr(*a1, Wd_tmp2);
-
-    // C0 = CC | VS
-    emit_logical_shifted_reg(buf, 0, /*ORR*/1, 0, /*LSL*/0, Wd_vs, 0, Wd_cc, Wd_cc);
-    // C3 = EQ | VS
-    emit_logical_shifted_reg(buf, 0, /*ORR*/1, 0, /*LSL*/0, Wd_vs, 0, Wd_tmp, Wd_tmp);
-
-    // Pack: Wd_tmp = (C0 << 8) | (C2 << 10) | (C3 << 14)
-    emit_bitfield(buf, /*is_64=*/0, /*UBFM=*/2, /*N=*/0,
-                  /*immr=*/24, /*imms=*/23, Wd_cc, Wd_cc);  // LSL #8
-    emit_logical_shifted_reg(buf, 0, /*ORR*/1, 0, /*LSL*/0, Wd_vs, 10, Wd_cc, Wd_cc);
-    emit_logical_shifted_reg(buf, 0, /*ORR*/1, 0, /*LSL*/0, Wd_tmp, 14, Wd_cc, Wd_tmp);
-
-    free_gpr(*a1, Wd_vs);
-    free_gpr(*a1, Wd_cc);
-
-    // RMW status_word
-    {
-        const int Wd_sw = alloc_free_gpr(*a1);
-        emit_ldr_str_imm(buf, 1, 0, 1, kX87StatusWordImm12, Xbase, Wd_sw);
-        // OPT-F1: Clear bits [10:8] (C0, C1, C2) with a single BFI, then bit 14 (C3).
-        emit_bitfield(buf, 0, 1, 0, 24, 2, GPR::XZR, Wd_sw);   // clear bits [10:8]
-        emit_bitfield(buf, 0, 1, 0, 18, 0, GPR::XZR, Wd_sw);   // clear bit 14
-        emit_logical_shifted_reg(buf, 0, 1, 0, 0, Wd_tmp, 0, Wd_sw, Wd_sw);
-        emit_ldr_str_imm(buf, 1, 0, 0, kX87StatusWordImm12, Xbase, Wd_sw);
-        free_gpr(*a1, Wd_sw);
-    }
+    // OPT-L: Branchless FCMP NZCV → packed x87 CC bits + RMW status_word.
+    emit_fcom_cc_pack(buf, *a1, Wd_tmp, Wd_tmp2);
+    emit_fcom_cc_write_sw(buf, *a1, Xbase, Wd_tmp);
 
     x87_end(*a1, buf, Xbase, Wd_top, Wd_tmp);
     free_gpr(*a1, Wd_tmp);

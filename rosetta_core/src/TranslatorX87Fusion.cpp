@@ -544,27 +544,8 @@ static auto try_fuse_fcom_fstsw(TranslationResult* a1, IRInstr* fcom_instr, IRIn
     free_fpr(*a1, Dd_src);
     free_fpr(*a1, Dd_st0);
 
-    const int Wd_cc = alloc_free_gpr(*a1);
-    const int Wd_vs = alloc_free_gpr(*a1);
-
-    emit_cset(buf, 0, /*CC=*/3, Wd_cc);
-    emit_cset(buf, 0, /*VS=*/6, Wd_vs);
-    emit_cset(buf, 0, /*EQ=*/0, Wd_tmp);
-
-    emit_msr_nzcv(buf, Wd_tmp2);
-    free_gpr(*a1, Wd_tmp2);
-
-    // C0 = CC | VS, C3 = EQ | VS
-    emit_logical_shifted_reg(buf, 0, 1, 0, 0, Wd_vs, 0, Wd_cc, Wd_cc);
-    emit_logical_shifted_reg(buf, 0, 1, 0, 0, Wd_vs, 0, Wd_tmp, Wd_tmp);
-
-    // Pack: Wd_tmp = (C0 << 8) | (C2 << 10) | (C3 << 14)
-    emit_bitfield(buf, 0, 2, 0, 24, 23, Wd_cc, Wd_cc);  // LSL #8
-    emit_logical_shifted_reg(buf, 0, 1, 0, 0, Wd_vs, 10, Wd_cc, Wd_cc);
-    emit_logical_shifted_reg(buf, 0, 1, 0, 0, Wd_tmp, 14, Wd_cc, Wd_tmp);
-
-    free_gpr(*a1, Wd_vs);
-    free_gpr(*a1, Wd_cc);
+    // OPT-L: Branchless FCMP NZCV → packed x87 CC bits.
+    emit_fcom_cc_pack(buf, *a1, Wd_tmp, Wd_tmp2);
 
     // ── RMW status_word + BFI into AX (FUSED — no separate LDRH for FSTSW) ──
     const int W_ax = fstsw_instr->operands[0].reg.reg.index();
@@ -1023,27 +1004,8 @@ static auto try_fuse_fld_fcomp_fstsw(TranslationResult* a1, IRInstr* fld_instr,
     free_fpr(*a1, Dd_cmp);
     free_fpr(*a1, Dd_fld);
 
-    const int Wd_cc = alloc_free_gpr(*a1);
-    const int Wd_vs = alloc_free_gpr(*a1);
-
-    emit_cset(buf, 0, /*CC=*/3, Wd_cc);
-    emit_cset(buf, 0, /*VS=*/6, Wd_vs);
-    emit_cset(buf, 0, /*EQ=*/0, Wd_tmp);
-
-    emit_msr_nzcv(buf, Wd_tmp2);
-    free_gpr(*a1, Wd_tmp2);
-
-    // C0 = CC | VS, C3 = EQ | VS
-    emit_logical_shifted_reg(buf, 0, 1, 0, 0, Wd_vs, 0, Wd_cc, Wd_cc);
-    emit_logical_shifted_reg(buf, 0, 1, 0, 0, Wd_vs, 0, Wd_tmp, Wd_tmp);
-
-    // Pack: Wd_tmp = (C0 << 8) | (C2 << 10) | (C3 << 14)
-    emit_bitfield(buf, 0, 2, 0, 24, 23, Wd_cc, Wd_cc);  // LSL #8
-    emit_logical_shifted_reg(buf, 0, 1, 0, 0, Wd_vs, 10, Wd_cc, Wd_cc);
-    emit_logical_shifted_reg(buf, 0, 1, 0, 0, Wd_tmp, 14, Wd_cc, Wd_tmp);
-
-    free_gpr(*a1, Wd_vs);
-    free_gpr(*a1, Wd_cc);
+    // OPT-L: Branchless FCMP NZCV → packed x87 CC bits.
+    emit_fcom_cc_pack(buf, *a1, Wd_tmp, Wd_tmp2);
 
     // ── 4d: RMW status_word + BFI into AX (OPT-F6 trick) ──────────────────
     const int W_ax = fstsw_instr->operands[0].reg.reg.index();
@@ -1143,27 +1105,8 @@ static auto try_fuse_fld_fcomp(TranslationResult* a1, IRInstr* fld_instr, IRInst
     free_fpr(*a1, Dd_st0);
     free_fpr(*a1, Dd_fld);
 
-    const int Wd_cc = alloc_free_gpr(*a1);
-    const int Wd_vs = alloc_free_gpr(*a1);
-
-    emit_cset(buf, 0, /*CC=*/3, Wd_cc);
-    emit_cset(buf, 0, /*VS=*/6, Wd_vs);
-    emit_cset(buf, 0, /*EQ=*/0, Wd_tmp);
-
-    emit_msr_nzcv(buf, Wd_tmp2);
-    free_gpr(*a1, Wd_tmp2);
-
-    // C0 = CC | VS, C3 = EQ | VS
-    emit_logical_shifted_reg(buf, 0, 1, 0, 0, Wd_vs, 0, Wd_cc, Wd_cc);
-    emit_logical_shifted_reg(buf, 0, 1, 0, 0, Wd_vs, 0, Wd_tmp, Wd_tmp);
-
-    // Pack: Wd_tmp = (C0 << 8) | (C2 << 10) | (C3 << 14)
-    emit_bitfield(buf, 0, 2, 0, 24, 23, Wd_cc, Wd_cc);  // LSL #8
-    emit_logical_shifted_reg(buf, 0, 1, 0, 0, Wd_vs, 10, Wd_cc, Wd_cc);
-    emit_logical_shifted_reg(buf, 0, 1, 0, 0, Wd_tmp, 14, Wd_cc, Wd_tmp);
-
-    free_gpr(*a1, Wd_vs);
-    free_gpr(*a1, Wd_cc);
+    // OPT-L: Branchless FCMP NZCV → packed x87 CC bits.
+    emit_fcom_cc_pack(buf, *a1, Wd_tmp, Wd_tmp2);
 
     // ── 3d: RMW status_word with new CC bits ────────────────────────────────
     {
@@ -1257,27 +1200,8 @@ static auto try_fuse_fld_fcompp_fstsw(TranslationResult* a1, IRInstr* fld_instr,
     free_fpr(*a1, Dd_st0);
     free_fpr(*a1, Dd_fld);
 
-    const int Wd_cc = alloc_free_gpr(*a1);
-    const int Wd_vs = alloc_free_gpr(*a1);
-
-    emit_cset(buf, 0, /*CC=*/3, Wd_cc);
-    emit_cset(buf, 0, /*VS=*/6, Wd_vs);
-    emit_cset(buf, 0, /*EQ=*/0, Wd_tmp);
-
-    emit_msr_nzcv(buf, Wd_tmp2);
-    free_gpr(*a1, Wd_tmp2);
-
-    // C0 = CC | VS, C3 = EQ | VS
-    emit_logical_shifted_reg(buf, 0, 1, 0, 0, Wd_vs, 0, Wd_cc, Wd_cc);
-    emit_logical_shifted_reg(buf, 0, 1, 0, 0, Wd_vs, 0, Wd_tmp, Wd_tmp);
-
-    // Pack: Wd_tmp = (C0 << 8) | (C2 << 10) | (C3 << 14)
-    emit_bitfield(buf, 0, 2, 0, 24, 23, Wd_cc, Wd_cc);  // LSL #8
-    emit_logical_shifted_reg(buf, 0, 1, 0, 0, Wd_vs, 10, Wd_cc, Wd_cc);
-    emit_logical_shifted_reg(buf, 0, 1, 0, 0, Wd_tmp, 14, Wd_cc, Wd_tmp);
-
-    free_gpr(*a1, Wd_vs);
-    free_gpr(*a1, Wd_cc);
+    // OPT-L: Branchless FCMP NZCV → packed x87 CC bits.
+    emit_fcom_cc_pack(buf, *a1, Wd_tmp, Wd_tmp2);
 
     // ── 4d: RMW status_word + BFI into AX (OPT-F6 trick) ───────────────────
     const int W_ax = fstsw_instr->operands[0].reg.reg.index();
@@ -1402,27 +1326,8 @@ static auto try_fuse_fld_fld_fucompp(TranslationResult* a1,
     free_fpr(*a1, Dd_val1);
     free_fpr(*a1, Dd_val2);
 
-    const int Wd_cc = alloc_free_gpr(*a1);
-    const int Wd_vs = alloc_free_gpr(*a1);
-
-    emit_cset(buf, 0, /*CC=*/3, Wd_cc);
-    emit_cset(buf, 0, /*VS=*/6, Wd_vs);
-    emit_cset(buf, 0, /*EQ=*/0, Wd_tmp);
-
-    emit_msr_nzcv(buf, Wd_tmp2);
-    free_gpr(*a1, Wd_tmp2);
-
-    // C0 = CC | VS, C3 = EQ | VS
-    emit_logical_shifted_reg(buf, 0, 1, 0, 0, Wd_vs, 0, Wd_cc, Wd_cc);
-    emit_logical_shifted_reg(buf, 0, 1, 0, 0, Wd_vs, 0, Wd_tmp, Wd_tmp);
-
-    // Pack: Wd_tmp = (C0 << 8) | (C2 << 10) | (C3 << 14)
-    emit_bitfield(buf, 0, 2, 0, 24, 23, Wd_cc, Wd_cc);  // LSL #8
-    emit_logical_shifted_reg(buf, 0, 1, 0, 0, Wd_vs, 10, Wd_cc, Wd_cc);
-    emit_logical_shifted_reg(buf, 0, 1, 0, 0, Wd_tmp, 14, Wd_cc, Wd_tmp);
-
-    free_gpr(*a1, Wd_vs);
-    free_gpr(*a1, Wd_cc);
+    // OPT-L: Branchless FCMP NZCV → packed x87 CC bits.
+    emit_fcom_cc_pack(buf, *a1, Wd_tmp, Wd_tmp2);
 
     // ── 4c: RMW status_word (+ optional BFI into AX for 4-instr form) ───────
     {

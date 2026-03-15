@@ -260,3 +260,24 @@ auto emit_fcom_flags_to_sw(AssemblerBuffer& buf, int Xbase, int Wd_tmp1, int Wd_
 // =============================================================================
 void emit_x87_perm_flush(AssemblerBuffer& buf, int Xbase, int Wd_top, int Wd_tmp,
                           const int8_t perm[8], int Xst_base, int Dd_save, int Dd_chain);
+
+// =============================================================================
+// OPT-L: Branchless FCMP NZCV → packed x87 CC bits.
+//
+// Pre:  NZCV holds the FCMP comparison result.
+//       Wd_save holds the saved host NZCV (from a prior MRS before FCMP).
+// Post: Wd_result = (C0 << 8) | (C2 << 10) | (C3 << 14).
+//       Host NZCV restored from Wd_save. Wd_save freed.
+//       Internally allocates/frees 2 GPRs (Wd_cc, Wd_vs).
+// =============================================================================
+void emit_fcom_cc_pack(AssemblerBuffer& buf, TranslationResult& a1,
+                        int Wd_result, int Wd_save);
+
+// =============================================================================
+// OPT-L: RMW status_word — clear C0/C1/C2/C3, OR in packed CC bits, store.
+//
+// Wd_packed = packed CC bits from emit_fcom_cc_pack.
+// Allocates/frees 1 GPR internally for the RMW scratch.
+// =============================================================================
+void emit_fcom_cc_write_sw(AssemblerBuffer& buf, TranslationResult& a1,
+                            int Xbase, int Wd_packed);
