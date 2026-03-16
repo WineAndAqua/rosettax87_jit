@@ -1479,6 +1479,148 @@ static auto try_fuse_arithp_fstp(TranslationResult* a1, IRInstr* arithp_instr, I
 }
 
 // =============================================================================
+// Peephole: non-popping ARITH + FSTP fusion (OPT-F14)
+//
+// Patterns: FMUL|FSTP, FADD|FSTP, FSUB|FSTP, FDIV|FSTP, FSUBR|FSTP, FDIVR|FSTP
+// ~9,635 total occurrences in candidate analysis.
+//
+// Without fusion, the non-popping arithmetic stores its result back to the x87
+// stack array, and the immediately following FSTP loads it from the stack to
+// write to memory — a redundant store-load round-trip.
+//
+// Fused: compute the arithmetic result in an ARM64 FP register and write
+// directly to the FSTP memory destination.  Skip the intermediate stack
+// writeback entirely.  Single pop at the end (ARITH doesn't pop; FSTP pops).
+//
+// Constraints:
+//   - ARITH destination must be ST(0) (so FSTP reads the result)
+//   - FSTP must target memory (m32/m64, not m80, not register)
+//
+// Saves ~6-8 ARM64 instructions per hit (eliminated store_st + load_st
+// round-trip + one x87_begin/end pair).
+//
+// Returns 2 (instructions consumed) if fused, std::nullopt otherwise.
+// =============================================================================
+
+static auto try_fuse_arith_fstp(TranslationResult* a1, IRInstr* arith_instr, IRInstr* fstp_instr)
+    -> std::optional<int> {
+    // ── 1. Classify the non-popping arithmetic op ────────────────────────────
+
+    enum ArithOp { kAdd, kSub, kSubR, kMul, kDiv, kDivR };
+
+    ArithOp arith;
+    switch (arith_instr->opcode) {
+        case kOpcodeName_fadd:  arith = kAdd;  break;
+        case kOpcodeName_fsub:  arith = kSub;  break;
+        case kOpcodeName_fsubr: arith = kSubR; break;
+        case kOpcodeName_fmul:  arith = kMul;  break;
+        case kOpcodeName_fdiv:  arith = kDiv;  break;
+        case kOpcodeName_fdivr: arith = kDivR; break;
+        default: return std::nullopt;
+    }
+
+    // ── 2. Check arithmetic destination is ST(0) ─────────────────────────────
+    //
+    // Register form: operands = [ST(dst), ST(src)]
+    //   D8 C0+i: [ST(0), ST(i)] — dst=0 ✓
+    //   DC C0+i: [ST(i), ST(0)] — dst=i ✗ (reject unless i==0)
+    //
+    // Memory form: operands = [mem_src, ST(0)_dst] — dst is always ST(0) ✓
+
+    const bool arith_is_mem = (arith_instr->operands[0].kind != IROperandKind::Register);
+
+    int arith_src_depth = 0;   // depth of the "other" operand
+
+    if (!arith_is_mem) {
+        const int depth_dst = arith_instr->operands[0].reg.reg.index();
+        const int depth_src = arith_instr->operands[1].reg.reg.index();
+        if (depth_dst != 0)
+            return std::nullopt;
+        arith_src_depth = depth_src;
+    }
+
+    // ── 3. Validate FSTP to memory (m32 or m64, not m80, not register) ──────
+
+    if (fstp_instr->opcode != kOpcodeName_fstp)
+        return std::nullopt;
+    if (fstp_instr->operands[0].kind == IROperandKind::Register)
+        return std::nullopt;
+    const auto fstp_size = fstp_instr->operands[0].mem.size;
+    if (fstp_size == IROperandSize::S80)
+        return std::nullopt;
+
+    const bool is_f32 = (fstp_size == IROperandSize::S32);
+
+    // ── 4. Emit fused code ──────────────────────────────────────────────────
+
+    AssemblerBuffer& buf = a1->insn_buf;
+    auto [Xbase, Wd_top] = x87_begin(*a1, buf);
+    const int Xst_base = x87_get_st_base(*a1);
+    const int Wd_tmp = alloc_gpr(*a1, 2);
+
+    const int Dd_dst = alloc_free_fpr(*a1);  // ST(0) value — receives result
+    const int Dd_src = alloc_free_fpr(*a1);  // other operand
+
+    if (arith_is_mem) {
+        // Memory form: load ST(0), load [mem], widen if f32, compute, store.
+        emit_load_st(buf, Xbase, Wd_top, resolve_depth(*a1, 0), Wd_tmp, Dd_dst, Xst_base);
+
+        const bool arith_f32 = (arith_instr->operands[0].mem.size == IROperandSize::S32);
+        const int addr_arith =
+            compute_operand_address(*a1, /*is_64bit=*/true, &arith_instr->operands[0], GPR::XZR);
+        emit_fldr_imm(buf, arith_f32 ? 2 : 3, Dd_src, addr_arith, /*imm12=*/0);
+        free_gpr(*a1, addr_arith);
+
+        if (arith_f32)
+            emit_fcvt_s_to_d(buf, Dd_src, Dd_src);
+
+        switch (arith) {
+            case kAdd:  emit_fadd_f64(buf, Dd_dst, Dd_dst, Dd_src); break;
+            case kSub:  emit_fsub_f64(buf, Dd_dst, Dd_dst, Dd_src); break;
+            case kSubR: emit_fsub_f64(buf, Dd_dst, Dd_src, Dd_dst); break;
+            case kMul:  emit_fmul_f64(buf, Dd_dst, Dd_dst, Dd_src); break;
+            case kDiv:  emit_fdiv_f64(buf, Dd_dst, Dd_dst, Dd_src); break;
+            case kDivR: emit_fdiv_f64(buf, Dd_dst, Dd_src, Dd_dst); break;
+        }
+    } else {
+        // Register form: ST(0) op ST(src_depth).
+        emit_load_st(buf, Xbase, Wd_top, resolve_depth(*a1, arith_src_depth), Wd_tmp, Dd_src, Xst_base);
+        emit_load_st(buf, Xbase, Wd_top, resolve_depth(*a1, 0), Wd_tmp, Dd_dst, Xst_base);
+
+        switch (arith) {
+            case kAdd:  emit_fadd_f64(buf, Dd_dst, Dd_dst, Dd_src); break;
+            case kSub:  emit_fsub_f64(buf, Dd_dst, Dd_dst, Dd_src); break;
+            case kSubR: emit_fsub_f64(buf, Dd_dst, Dd_src, Dd_dst); break;
+            case kMul:  emit_fmul_f64(buf, Dd_dst, Dd_dst, Dd_src); break;
+            case kDiv:  emit_fdiv_f64(buf, Dd_dst, Dd_dst, Dd_src); break;
+            case kDivR: emit_fdiv_f64(buf, Dd_dst, Dd_src, Dd_dst); break;
+        }
+    }
+
+    // Convert and store to FSTP memory destination — result goes directly.
+    if (is_f32)
+        emit_fcvt_d_to_s(buf, Dd_dst, Dd_dst);
+
+    const int addr_fstp =
+        compute_operand_address(*a1, /*is_64bit=*/true, &fstp_instr->operands[0], GPR::XZR);
+    emit_fstr_imm(buf, is_f32 ? 2 : 3, Dd_dst, addr_fstp, /*imm12=*/0);
+    free_gpr(*a1, addr_fstp);
+
+    // Single pop — ARITH doesn't pop, FSTP pops once.
+    // Use x87_pop (not x87_pop_n) to participate in OPT-D2 deferred tag
+    // batching — emits only 2 instructions (ADD+AND on Wd_top) in cached mode
+    // instead of the 8+ instructions from x87_pop_n's eager tag invalidation.
+    x87_pop(buf, *a1, Xbase, Wd_top, Wd_tmp);
+
+    free_fpr(*a1, Dd_src);
+    free_fpr(*a1, Dd_dst);
+    x87_end(*a1, buf, Xbase, Wd_top, Wd_tmp, /*consumed=*/2);
+    free_gpr(*a1, Wd_tmp);
+
+    return 2;
+}
+
+// =============================================================================
 // Peephole: FSTP + FLD fusion (pop + push cancel)
 //
 // When FSTP pops ST(0) to a destination and the immediately following FLD
@@ -1691,6 +1833,18 @@ static auto try_fuse_arithp_group(TranslationResult* tr, IRInstr* instrs, int64_
     return std::nullopt;
 }
 
+static auto try_fuse_arith_group(TranslationResult* tr, IRInstr* instrs, int64_t num, int64_t idx,
+                                 uint64_t disabled_mask) -> std::optional<int> {
+    IRInstr* cur = &instrs[idx];
+    IRInstr* next = &instrs[idx + 1];
+
+    if (!fusion_disabled(disabled_mask, FusionId::arith_fstp))
+        if (auto r = try_fuse_arith_fstp(tr, cur, next))
+            return r;
+
+    return std::nullopt;
+}
+
 static auto try_fuse_fstp_group(TranslationResult* tr, IRInstr* instrs, int64_t num, int64_t idx,
                                 uint64_t disabled_mask) -> std::optional<int> {
     IRInstr* cur = &instrs[idx];
@@ -1742,6 +1896,14 @@ auto try_peephole(TranslationResult* tr, IRInstr* instrs, int64_t num, int64_t i
         case kOpcodeName_fdivp:
         case kOpcodeName_fdivrp:
             return try_fuse_arithp_group(tr, instrs, num, idx, disabled_mask);
+
+        case kOpcodeName_fadd:
+        case kOpcodeName_fsub:
+        case kOpcodeName_fsubr:
+        case kOpcodeName_fmul:
+        case kOpcodeName_fdiv:
+        case kOpcodeName_fdivr:
+            return try_fuse_arith_group(tr, instrs, num, idx, disabled_mask);
 
         case kOpcodeName_fstp:
         case kOpcodeName_fstp_stack:

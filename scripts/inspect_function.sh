@@ -53,6 +53,13 @@ ALL_FUSIONS=(
     fxch_arithp
     fxch_fstp
     fcom_fstsw
+    fld_fcompp_fstsw
+    fld_fld_fucompp
+    fld_fcomp
+    fld_arith_arithp
+    arithp_fstp
+    fstp_fld
+    arith_fstp
 )
 
 # ---- parse optional arguments ------------------------------------------------

@@ -64,10 +64,15 @@ ALL_FUSIONS=(
     fcom_fstsw
     fld_fcompp_fstsw
     fld_fld_fucompp
+    fld_fcomp
+    fld_arith_arithp
+    arithp_fstp
+    fstp_fld
+    arith_fstp
 )
 
 # Tests that exercise fusion patterns
-FUSION_TESTS=(test_peephole3 test_peephole4 test_peephole5 test_peephole6 test_peephole7 test_peephole test_arith test_fcomp_mem test_x87_full)
+FUSION_TESTS=(test_peephole3 test_peephole4 test_peephole5 test_peephole6 test_peephole7 test_peephole8 test_peephole test_arith test_fcomp_mem test_x87_full)
 
 ALL_OPCODES=(
     fldz fld1 fldl2e fldl2t fldlg2 fldln2 fldpi
