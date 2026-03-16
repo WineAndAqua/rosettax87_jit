@@ -78,6 +78,24 @@ struct FPRState {
         if (node_id < 0 || node_id >= kMaxNodes) return -1;
         return node_fpr[node_id];
     }
+
+    // Try to reuse an FPR from a dying input of node `i`.
+    // Returns the FPR register number, or -1 if no reuse is possible.
+    // On success, sets node_fpr[input] = -1 so free_dead_inputs skips it.
+    // Caller MUST capture input FPRs via get() BEFORE calling this.
+    int try_reuse_input(const Context& ctx, int i) {
+        const auto& n = ctx.nodes[i];
+        // Prefer inputs[0] (Dn, natural accumulator position)
+        for (int pref = 0; pref < 3; pref++) {
+            int16_t in = n.inputs[pref];
+            if (in >= 0 && last_use[in] == i && node_fpr[in] >= 0) {
+                int fpr = node_fpr[in];
+                node_fpr[in] = -1;  // claimed — free_dead_inputs will skip
+                return fpr;
+            }
+        }
+        return -1;
+    }
 };
 
 // ── Main lowering ───────────────────────────────────────────────────────────
@@ -182,27 +200,35 @@ void lower(Context& ctx, TranslationResult* result) {
 
         // ── Binary arithmetic ───────────────────────────────────────────
         case Op::FAdd: {
-            int Dd = alloc_free_fpr(*result);
+            int Dn = fprs.get(n.inputs[0]), Dm = fprs.get(n.inputs[1]);
+            int Dd = fprs.try_reuse_input(ctx, i);
+            if (Dd < 0) Dd = alloc_free_fpr(*result);
             fprs.node_fpr[i] = static_cast<int8_t>(Dd);
-            emit_fadd_f64(buf, Dd, fprs.get(n.inputs[0]), fprs.get(n.inputs[1]));
+            emit_fadd_f64(buf, Dd, Dn, Dm);
             break;
         }
         case Op::FSub: {
-            int Dd = alloc_free_fpr(*result);
+            int Dn = fprs.get(n.inputs[0]), Dm = fprs.get(n.inputs[1]);
+            int Dd = fprs.try_reuse_input(ctx, i);
+            if (Dd < 0) Dd = alloc_free_fpr(*result);
             fprs.node_fpr[i] = static_cast<int8_t>(Dd);
-            emit_fsub_f64(buf, Dd, fprs.get(n.inputs[0]), fprs.get(n.inputs[1]));
+            emit_fsub_f64(buf, Dd, Dn, Dm);
             break;
         }
         case Op::FMul: {
-            int Dd = alloc_free_fpr(*result);
+            int Dn = fprs.get(n.inputs[0]), Dm = fprs.get(n.inputs[1]);
+            int Dd = fprs.try_reuse_input(ctx, i);
+            if (Dd < 0) Dd = alloc_free_fpr(*result);
             fprs.node_fpr[i] = static_cast<int8_t>(Dd);
-            emit_fmul_f64(buf, Dd, fprs.get(n.inputs[0]), fprs.get(n.inputs[1]));
+            emit_fmul_f64(buf, Dd, Dn, Dm);
             break;
         }
         case Op::FDiv: {
-            int Dd = alloc_free_fpr(*result);
+            int Dn = fprs.get(n.inputs[0]), Dm = fprs.get(n.inputs[1]);
+            int Dd = fprs.try_reuse_input(ctx, i);
+            if (Dd < 0) Dd = alloc_free_fpr(*result);
             fprs.node_fpr[i] = static_cast<int8_t>(Dd);
-            emit_fdiv_f64(buf, Dd, fprs.get(n.inputs[0]), fprs.get(n.inputs[1]));
+            emit_fdiv_f64(buf, Dd, Dn, Dm);
             break;
         }
 
@@ -210,46 +236,58 @@ void lower(Context& ctx, TranslationResult* result) {
         case Op::FMAdd: {
             // FMADD Dd, Dn, Dm, Da → Da + Dn * Dm
             // inputs[0] = Dn, inputs[1] = Dm, inputs[2] = Da
-            int Dd = alloc_free_fpr(*result);
+            int Dn = fprs.get(n.inputs[0]), Dm = fprs.get(n.inputs[1]);
+            int Da = fprs.get(n.inputs[2]);
+            int Dd = fprs.try_reuse_input(ctx, i);
+            if (Dd < 0) Dd = alloc_free_fpr(*result);
             fprs.node_fpr[i] = static_cast<int8_t>(Dd);
-            emit_fmadd_f64(buf, Dd, fprs.get(n.inputs[0]), fprs.get(n.inputs[1]),
-                           fprs.get(n.inputs[2]));
+            emit_fmadd_f64(buf, Dd, Dn, Dm, Da);
             break;
         }
         case Op::FMSub: {
             // FMSUB Dd, Dn, Dm, Da → Da - Dn * Dm
-            int Dd = alloc_free_fpr(*result);
+            int Dn = fprs.get(n.inputs[0]), Dm = fprs.get(n.inputs[1]);
+            int Da = fprs.get(n.inputs[2]);
+            int Dd = fprs.try_reuse_input(ctx, i);
+            if (Dd < 0) Dd = alloc_free_fpr(*result);
             fprs.node_fpr[i] = static_cast<int8_t>(Dd);
-            emit_fmsub_f64(buf, Dd, fprs.get(n.inputs[0]), fprs.get(n.inputs[1]),
-                           fprs.get(n.inputs[2]));
+            emit_fmsub_f64(buf, Dd, Dn, Dm, Da);
             break;
         }
         case Op::FNMSub: {
             // FNMSUB Dd, Dn, Dm, Da → Dn * Dm - Da
-            int Dd = alloc_free_fpr(*result);
+            int Dn = fprs.get(n.inputs[0]), Dm = fprs.get(n.inputs[1]);
+            int Da = fprs.get(n.inputs[2]);
+            int Dd = fprs.try_reuse_input(ctx, i);
+            if (Dd < 0) Dd = alloc_free_fpr(*result);
             fprs.node_fpr[i] = static_cast<int8_t>(Dd);
-            emit_fnmsub_f64(buf, Dd, fprs.get(n.inputs[0]), fprs.get(n.inputs[1]),
-                            fprs.get(n.inputs[2]));
+            emit_fnmsub_f64(buf, Dd, Dn, Dm, Da);
             break;
         }
 
         // ── Unary ───────────────────────────────────────────────────────
         case Op::FNeg: {
-            int Dd = alloc_free_fpr(*result);
+            int Dn = fprs.get(n.inputs[0]);
+            int Dd = fprs.try_reuse_input(ctx, i);
+            if (Dd < 0) Dd = alloc_free_fpr(*result);
             fprs.node_fpr[i] = static_cast<int8_t>(Dd);
-            emit_fneg_f64(buf, Dd, fprs.get(n.inputs[0]));
+            emit_fneg_f64(buf, Dd, Dn);
             break;
         }
         case Op::FAbs: {
-            int Dd = alloc_free_fpr(*result);
+            int Dn = fprs.get(n.inputs[0]);
+            int Dd = fprs.try_reuse_input(ctx, i);
+            if (Dd < 0) Dd = alloc_free_fpr(*result);
             fprs.node_fpr[i] = static_cast<int8_t>(Dd);
-            emit_fabs_f64(buf, Dd, fprs.get(n.inputs[0]));
+            emit_fabs_f64(buf, Dd, Dn);
             break;
         }
         case Op::FSqrt: {
-            int Dd = alloc_free_fpr(*result);
+            int Dn = fprs.get(n.inputs[0]);
+            int Dd = fprs.try_reuse_input(ctx, i);
+            if (Dd < 0) Dd = alloc_free_fpr(*result);
             fprs.node_fpr[i] = static_cast<int8_t>(Dd);
-            emit_fsqrt_f64(buf, Dd, fprs.get(n.inputs[0]));
+            emit_fsqrt_f64(buf, Dd, Dn);
             break;
         }
 
