@@ -327,6 +327,32 @@ auto emit_fdiv_f64(AssemblerBuffer& buf, int Dd, int Dn, int Dm) -> void {
     emit_fp_dp2(buf, /*type=*/1, /*FDIV=*/1, Dd, Dn, Dm);
 }
 
+auto emit_fp_dp3(AssemblerBuffer& buf, int type, int o1, int o0, int Rd, int Rn, int Rm,
+                 int Ra) -> void {
+    // Scalar FP data-proc 3-source:
+    // [31]=M=0 [30]=0 [29]=S=0 [28:24]=11111 [23:22]=type [21]=o1
+    // [20:16]=Rm [15]=o0 [14:10]=Ra [9:5]=Rn [4:0]=Rd
+    uint32_t insn = 0x1F000000;
+    insn |= (uint32_t)(type & 0x3) << 22;
+    insn |= (uint32_t)(o1 & 0x1) << 21;
+    insn |= (uint32_t)(Rm & 0x1F) << 16;
+    insn |= (uint32_t)(o0 & 0x1) << 15;
+    insn |= (uint32_t)(Ra & 0x1F) << 10;
+    insn |= (uint32_t)(Rn & 0x1F) << 5;
+    insn |= (uint32_t)(Rd & 0x1F);
+    buf.emit(insn);
+}
+
+auto emit_fmadd_f64(AssemblerBuffer& buf, int Dd, int Dn, int Dm, int Da) -> void {
+    emit_fp_dp3(buf, /*type=*/1, /*o1=*/0, /*o0=*/0, Dd, Dn, Dm, Da);
+}
+auto emit_fmsub_f64(AssemblerBuffer& buf, int Dd, int Dn, int Dm, int Da) -> void {
+    emit_fp_dp3(buf, /*type=*/1, /*o1=*/0, /*o0=*/1, Dd, Dn, Dm, Da);
+}
+auto emit_fnmsub_f64(AssemblerBuffer& buf, int Dd, int Dn, int Dm, int Da) -> void {
+    emit_fp_dp3(buf, /*type=*/1, /*o1=*/1, /*o0=*/1, Dd, Dn, Dm, Da);
+}
+
 auto emit_fp_dp1(AssemblerBuffer& buf, int type, int opcode, int Rd, int Rn) -> void {
     // Scalar FP data-proc 1-source:
     // [31:24]=0x1E [23:22]=type [21]=1 [20:15]=opcode [14:10]=10000 [9:5]=Rn [4:0]=Rd

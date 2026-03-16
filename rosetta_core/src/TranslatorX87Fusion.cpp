@@ -1621,6 +1621,130 @@ static auto try_fuse_arith_fstp(TranslationResult* a1, IRInstr* arith_instr, IRI
 }
 
 // =============================================================================
+// Peephole: FMUL + FADDP/FSUBP/FSUBRP fusion (OPT-F15) — FMA
+//
+// Patterns: FMUL + FADDP, FMUL + FSUBP, FMUL + FSUBRP
+// ~1,980 total occurrences in candidate analysis (1,726 FMUL|FADDP + 254
+// FMUL|FSUBP), heavily concentrated in matrix multiply functions.
+//
+// Semantics:
+//   FMUL:  ST(0) = ST(0) * operand          (operand is ST(i) or [mem])
+//   FADDP: ST(1) = ST(1) + ST(0), pop  →  result = old_ST(1) + old_ST(0) * op
+//   FSUBP: ST(1) = ST(1) - ST(0), pop  →  result = old_ST(1) - old_ST(0) * op
+//   FSUBRP:ST(1) = ST(0) - ST(1), pop  →  result = old_ST(0) * op - old_ST(1)
+//
+// Fused: emit a single ARM64 FMADD/FMSUB/FNMSUB instead of separate FMUL +
+// FADD/FSUB.  Halves FP pipeline latency (8cy → 4cy on Firestorm/Avalanche).
+//
+// Net stack effect: −1 (FMUL doesn't pop; FADDP/FSUBP/FSUBRP pops once).
+// Result stored to old ST(1), which becomes new ST(0) after pop.
+//
+// Returns 2 (instructions consumed) if fused, std::nullopt otherwise.
+// =============================================================================
+
+static auto try_fuse_arith_faddp(TranslationResult* a1, IRInstr* mul_instr, IRInstr* addp_instr)
+    -> std::optional<int> {
+    // ── 1. Gate on FMUL only — FMA requires multiply as the first op ────────
+    if (mul_instr->opcode != kOpcodeName_fmul)
+        return std::nullopt;
+
+    // ── 2. Check FMUL destination is ST(0) ──────────────────────────────────
+    const bool mul_is_mem = (mul_instr->operands[0].kind != IROperandKind::Register);
+    int mul_src_depth = 0;
+
+    if (!mul_is_mem) {
+        const int depth_dst = mul_instr->operands[0].reg.reg.index();
+        const int depth_src = mul_instr->operands[1].reg.reg.index();
+        if (depth_dst != 0)
+            return std::nullopt;
+        mul_src_depth = depth_src;
+    }
+
+    // ── 3. Classify second instruction: FADDP/FSUBP/FSUBRP targeting ST(1) ─
+    //
+    // ARM64 mapping:
+    //   FADDP  → FMADD  Dd, Dn, Dm, Da   (Dd = Da + Dn*Dm)
+    //   FSUBP  → FMSUB  Dd, Dn, Dm, Da   (Dd = Da - Dn*Dm)
+    //   FSUBRP → FNMSUB Dd, Dn, Dm, Da   (Dd = Dn*Dm - Da)
+    enum FmaKind { kFmadd, kFmsub, kFnmsub };
+    FmaKind kind;
+    switch (addp_instr->opcode) {
+        case kOpcodeName_faddp:  kind = kFmadd;  break;
+        case kOpcodeName_fsubp:  kind = kFmsub;  break;
+        case kOpcodeName_fsubrp: kind = kFnmsub; break;
+        default: return std::nullopt;
+    }
+
+    if (addp_instr->operands[0].reg.reg.index() != 1)
+        return std::nullopt;
+
+    // ── 4. Emit fused code ──────────────────────────────────────────────────
+
+    AssemblerBuffer& buf = a1->insn_buf;
+    auto [Xbase, Wd_top] = x87_begin(*a1, buf);
+    const int Xst_base = x87_get_st_base(*a1);
+    const int Wd_tmp = alloc_gpr(*a1, 2);
+
+    const int Dd_st0    = alloc_free_fpr(*a1);  // ST(0) — first multiply operand
+    const int Dd_mul_op = alloc_free_fpr(*a1);  // second multiply operand (ST(i) or [mem])
+    const int Dd_st1    = alloc_free_fpr(*a1);  // ST(1) — accumulator
+
+    if (mul_is_mem) {
+        // Memory form: FMUL [mem] — ST(0) *= [mem]
+        emit_load_st(buf, Xbase, Wd_top, resolve_depth(*a1, 0), Wd_tmp, Dd_st0, Xst_base);
+
+        const bool mul_f32 = (mul_instr->operands[0].mem.size == IROperandSize::S32);
+        const int addr_mul =
+            compute_operand_address(*a1, /*is_64bit=*/true, &mul_instr->operands[0], GPR::XZR);
+        emit_fldr_imm(buf, mul_f32 ? 2 : 3, Dd_mul_op, addr_mul, /*imm12=*/0);
+        free_gpr(*a1, addr_mul);
+
+        if (mul_f32)
+            emit_fcvt_s_to_d(buf, Dd_mul_op, Dd_mul_op);
+
+        const int Wk_st1 =
+            emit_load_st(buf, Xbase, Wd_top, resolve_depth(*a1, 1), Wd_tmp, Dd_st1, Xst_base);
+
+        // Emit FMA: Dd_st1 = f(Dd_st1, Dd_st0, Dd_mul_op)
+        switch (kind) {
+            case kFmadd:  emit_fmadd_f64(buf, Dd_st1, Dd_st0, Dd_mul_op, Dd_st1);  break;
+            case kFmsub:  emit_fmsub_f64(buf, Dd_st1, Dd_st0, Dd_mul_op, Dd_st1);  break;
+            case kFnmsub: emit_fnmsub_f64(buf, Dd_st1, Dd_st0, Dd_mul_op, Dd_st1); break;
+        }
+
+        // Store result back to ST(1) — reuse key from the ST(1) load.
+        emit_store_st_at_offset(buf, Xbase, Wk_st1, Dd_st1, Xst_base);
+    } else {
+        // Register form: FMUL ST(0), ST(mul_src_depth)
+        emit_load_st(buf, Xbase, Wd_top, resolve_depth(*a1, mul_src_depth), Wd_tmp, Dd_mul_op, Xst_base);
+        emit_load_st(buf, Xbase, Wd_top, resolve_depth(*a1, 0), Wd_tmp, Dd_st0, Xst_base);
+        const int Wk_st1 =
+            emit_load_st(buf, Xbase, Wd_top, resolve_depth(*a1, 1), Wd_tmp, Dd_st1, Xst_base);
+
+        switch (kind) {
+            case kFmadd:  emit_fmadd_f64(buf, Dd_st1, Dd_st0, Dd_mul_op, Dd_st1);  break;
+            case kFmsub:  emit_fmsub_f64(buf, Dd_st1, Dd_st0, Dd_mul_op, Dd_st1);  break;
+            case kFnmsub: emit_fnmsub_f64(buf, Dd_st1, Dd_st0, Dd_mul_op, Dd_st1); break;
+        }
+
+        emit_store_st_at_offset(buf, Xbase, Wk_st1, Dd_st1, Xst_base);
+    }
+
+    // Single pop — FMUL doesn't pop, FADDP/FSUBP/FSUBRP pops once.
+    // Use x87_pop (not x87_pop_n) to participate in OPT-D2 deferred tag
+    // batching — emits only 2 instructions (ADD+AND on Wd_top) in cached mode.
+    x87_pop(buf, *a1, Xbase, Wd_top, Wd_tmp);
+
+    free_fpr(*a1, Dd_mul_op);
+    free_fpr(*a1, Dd_st0);
+    free_fpr(*a1, Dd_st1);
+    x87_end(*a1, buf, Xbase, Wd_top, Wd_tmp, /*consumed=*/2);
+    free_gpr(*a1, Wd_tmp);
+
+    return 2;
+}
+
+// =============================================================================
 // Peephole: FSTP + FLD fusion (pop + push cancel)
 //
 // When FSTP pops ST(0) to a destination and the immediately following FLD
@@ -1837,6 +1961,10 @@ static auto try_fuse_arith_group(TranslationResult* tr, IRInstr* instrs, int64_t
                                  uint64_t disabled_mask) -> std::optional<int> {
     IRInstr* cur = &instrs[idx];
     IRInstr* next = &instrs[idx + 1];
+
+    if (!fusion_disabled(disabled_mask, FusionId::arith_faddp))
+        if (auto r = try_fuse_arith_faddp(tr, cur, next))
+            return r;
 
     if (!fusion_disabled(disabled_mask, FusionId::arith_fstp))
         if (auto r = try_fuse_arith_fstp(tr, cur, next))

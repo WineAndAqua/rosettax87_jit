@@ -85,6 +85,7 @@ static const NameBit kFusionBits[] = {
     {"arithp_fstp",     static_cast<int>(FusionId::arithp_fstp)},
     {"fstp_fld",        static_cast<int>(FusionId::fstp_fld)},
     {"arith_fstp",      static_cast<int>(FusionId::arith_fstp)},
+    {"arith_faddp",     static_cast<int>(FusionId::arith_faddp)},
 };
 
 static void apply_mask_from_env(const char* env_var, uint64_t& mask,

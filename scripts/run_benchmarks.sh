@@ -39,6 +39,7 @@ ALL_BENCHMARKS=(
     bench_fusion_fcom_fstsw
     bench_fusion_arithp_fstp
     bench_fusion_arith_fstp
+    bench_fusion_arith_faddp
     bench_fstp_fld
     bench_round
     bench_fistt

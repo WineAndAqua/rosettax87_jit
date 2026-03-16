@@ -127,6 +127,20 @@ auto emit_fsub_f64(AssemblerBuffer& buf, int Dd, int Dn, int Dm) -> void;
 auto emit_fmul_f64(AssemblerBuffer& buf, int Dd, int Dn, int Dm) -> void;
 auto emit_fdiv_f64(AssemblerBuffer& buf, int Dd, int Dn, int Dm) -> void;
 
+// Scalar FP data-processing, 3 sources
+// type:   0=f32  1=f64
+// o1, o0: select operation:
+//   o1=0 o0=0 → FMADD:  Dd = Da + Dn * Dm
+//   o1=0 o0=1 → FMSUB:  Dd = Da - Dn * Dm
+//   o1=1 o0=0 → FNMADD: Dd = -Da - Dn * Dm
+//   o1=1 o0=1 → FNMSUB: Dd = Dn * Dm - Da
+auto emit_fp_dp3(AssemblerBuffer& buf, int type, int o1, int o0, int Rd, int Rn, int Rm,
+                 int Ra) -> void;
+
+auto emit_fmadd_f64(AssemblerBuffer& buf, int Dd, int Dn, int Dm, int Da) -> void;
+auto emit_fmsub_f64(AssemblerBuffer& buf, int Dd, int Dn, int Dm, int Da) -> void;
+auto emit_fnmsub_f64(AssemblerBuffer& buf, int Dd, int Dn, int Dm, int Da) -> void;
+
 // Scalar FP data-processing, 1 source
 // type:   0=f32  1=f64
 // opcode: 0=FMOV  1=FABS  2=FNEG  3=FSQRT

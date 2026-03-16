@@ -52,6 +52,7 @@ ALL_TESTS=(
     test_x87_full
     test_fstpt
     test_peephole7
+    test_arith_faddp
 )
 
 ALL_FUSIONS=(
@@ -69,10 +70,11 @@ ALL_FUSIONS=(
     arithp_fstp
     fstp_fld
     arith_fstp
+    arith_faddp
 )
 
 # Tests that exercise fusion patterns
-FUSION_TESTS=(test_peephole3 test_peephole4 test_peephole5 test_peephole6 test_peephole7 test_peephole8 test_peephole test_arith test_fcomp_mem test_x87_full)
+FUSION_TESTS=(test_peephole3 test_peephole4 test_peephole5 test_peephole6 test_peephole7 test_peephole8 test_peephole test_arith test_fcomp_mem test_x87_full test_arith_faddp)
 
 ALL_OPCODES=(
     fldz fld1 fldl2e fldl2t fldlg2 fldln2 fldpi
@@ -110,13 +112,13 @@ OPCODE_TESTS[fist]="test_compare_unary test_x87_full"
 OPCODE_TESTS[fistp]="test_fld_fst test_x87_full"
 OPCODE_TESTS[fstsw]="test_fcom test_x87_full test_peephole5 test_peephole6 test_peephole7"
 OPCODE_TESTS[fadd]="test_arith test_deep_stack test_peephole6"
-OPCODE_TESTS[faddp]="test_arith test_deep_stack test_peephole6 test_peephole7"
+OPCODE_TESTS[faddp]="test_arith test_deep_stack test_peephole6 test_peephole7 test_arith_faddp"
 OPCODE_TESTS[fiadd]="test_arith"
 OPCODE_TESTS[fsub]="test_arith test_fcomp_mem test_deep_stack test_peephole6"
 OPCODE_TESTS[fsubr]="test_arith test_peephole4"
-OPCODE_TESTS[fsubp]="test_arith test_peephole7"
-OPCODE_TESTS[fsubrp]="test_arith test_peephole6 test_peephole7"
-OPCODE_TESTS[fmul]="test_arith test_fmul test_deep_stack test_peephole6"
+OPCODE_TESTS[fsubp]="test_arith test_peephole7 test_arith_faddp"
+OPCODE_TESTS[fsubrp]="test_arith test_peephole6 test_peephole7 test_arith_faddp"
+OPCODE_TESTS[fmul]="test_arith test_fmul test_deep_stack test_peephole6 test_arith_faddp"
 OPCODE_TESTS[fmulp]="test_arith test_deep_stack test_peephole6 test_peephole7"
 OPCODE_TESTS[fimul]="test_arith"
 OPCODE_TESTS[fdiv]="test_arith test_deep_stack test_peephole4"

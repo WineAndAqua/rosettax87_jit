@@ -40,6 +40,7 @@ ALL_TESTS=(
     test_peephole7
     test_fcom_nzcv
     test_arithp_fstp
+    test_arith_faddp
     test_fstp_fld
     test_fistt
     test_tag_batch
