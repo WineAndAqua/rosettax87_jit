@@ -8,6 +8,7 @@
 #include "rosetta_core/TranslatorX87.h"
 #include "rosetta_core/TranslatorX87Fusion.h"
 #include "rosetta_core/X87Cache.h"
+#include "rosetta_core/X87IR.h"
 #include "rosetta_config/Config.h"
 
 static OpcodeId opcode_to_id(uint16_t op) {
@@ -84,6 +85,11 @@ auto Translator::translate_instruction(TranslationResult* translation_result, IR
     const auto opcode = cur_instr->opcode;
     auto& cache = translation_result->x87_cache;
 
+    // expand the free register masks from old 8-FPR form to new 16-FPR form, if we haven't already.
+    if (translation_result->free_fpr_mask == kOldFprScratchMask) {
+        translation_result->free_fpr_mask = kFprScratchMask;
+    }
+
     // ── OPT-1: x87 cross-instruction cache management ───────────────────────
     // Invalidate the cache if we've moved to a different block (between blocks,
     // branches may have executed non-x87 code that clobbers scratch GPRs).
@@ -104,6 +110,33 @@ auto Translator::translate_instruction(TranslationResult* translation_result, IR
         }
     }
 
+    // ── IR pipeline: try whole-run optimization for runs of 3+ ─────────────
+    // The IR fires once at the start of a fresh run (no deferred cache state).
+    // It builds an SSA-like IR, runs optimization passes (DSE, FMA, FCOM+FSTSW
+    // fusion), and lowers directly to AArch64.
+    {
+        const bool ir_disabled = g_rosetta_config && g_rosetta_config->disable_x87_ir;
+        if (!ir_disabled && cache.active() && cache.run_remaining >= 3 &&
+            cache.top_dirty == 0 && cache.tag_push_pending == 0 &&
+            cache.deferred_pop_count == 0 && !cache.perm_dirty) {
+            const int ir_consumed = X87IR::compile_run(
+                translation_result, instr_array, num_instrs, insn_idx, cache.run_remaining);
+            if (ir_consumed > 0) {
+                for (int i = 0; i < ir_consumed; i++)
+                    cache.tick();
+                if (cache.active()) {
+                    translation_result->free_gpr_mask = kGprScratchMask & ~cache.pinned_mask();
+                } else {
+                    translation_result->free_gpr_mask = kGprScratchMask;
+                }
+                translation_result->free_fpr_mask =
+                    translation_result->_unoccupied_temporary_fprs_for_xmm_scalars;
+                translation_result->_pinned_temporary_scalars = 0;
+                return insn_idx + ir_consumed;
+            }
+        }
+    }
+
     // ── Peephole: try 2-instruction fusion patterns ─────────────────────────
     const uint64_t fusions_mask = g_rosetta_config ? g_rosetta_config->disabled_fusions_mask : 0;
     const auto fused =
@@ -115,6 +148,8 @@ auto Translator::translate_instruction(TranslationResult* translation_result, IR
             const auto id = opcode_to_id(opcode);
             if (id != OpcodeId::kCount && op_is_disabled(*g_rosetta_config, id)) {
                 cache.invalidate(translation_result->free_gpr_mask, kGprScratchMask);
+                translation_result->free_fpr_mask =
+                    translation_result->_unoccupied_temporary_fprs_for_xmm_scalars;
                 return std::nullopt;
             }
         }
@@ -291,6 +326,9 @@ auto Translator::translate_instruction(TranslationResult* translation_result, IR
                 // Hand translation back to rosetta, we don't support this instruction - invalidate
                 // cache.
                 cache.invalidate(translation_result->free_gpr_mask, kGprScratchMask);
+                // restore fpr mask
+                translation_result->free_fpr_mask =
+                    translation_result->_unoccupied_temporary_fprs_for_xmm_scalars;
                 return std::nullopt;
         }
     }
