@@ -318,6 +318,11 @@ bool build(Context& ctx, IRInstr* instr_array, int64_t num_instrs, int64_t start
                 // Rosetta encodes FXCH as [ST(0), ST(i)] — target depth is operands[1].
                 int depth = instr->operands[1].reg.reg.index();
                 if (depth <= 0 || depth >= 8) { ok = false; break; }
+                // Force-resolve both slots so the epilogue can track the swap.
+                // Without this, two unresolved initial slots (val < 0) would be
+                // swapped symbolically but the epilogue would skip both stores.
+                ctx.resolve(0);
+                ctx.resolve(depth);
                 auto tmp = ctx.slot_val[0];
                 ctx.slot_val[0] = ctx.slot_val[depth];
                 ctx.slot_val[depth] = tmp;
