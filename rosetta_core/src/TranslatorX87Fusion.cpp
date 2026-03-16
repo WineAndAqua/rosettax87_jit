@@ -865,10 +865,23 @@ static auto try_fuse_fld_arith_arithp(TranslationResult* a1, IRInstr* fld_instr,
     // Wd_tmp is now free to be reused as the depth-0 offset key.
     const int Wk_st0 = emit_load_st(buf, Xbase, Wd_top, resolve_depth(*a1, 0), Wd_tmp, Dd_st0, Xst_base);
 
-    // ── 4c: Middle arithmetic — operates on Dd_fld (new ST(0)) and Dd_st0 (ST(1))
-    //        Result in Dd_fld (the intermediate).
-    if (arith1_is_mem) {
-        // Memory operand: load it into a temporary, then operate.
+    // ── 4c+4d: FMA fast path — when arith1=MUL and arith2 ∈ {ADD,SUB,SUBR},
+    //           fold the multiply and accumulate into a single FMA instruction.
+    //
+    //   Semantics (register form):
+    //     Step 4c produced: intermediate = Dd_fld * Dd_st0
+    //     Step 4d produced: Dd_st0 = op2(Dd_st0, intermediate)
+    //   Combined:
+    //     kAdd  → Dd_st0 = Dd_st0 + Dd_fld * Dm   (FMADD)
+    //     kSub  → Dd_st0 = Dd_st0 - Dd_fld * Dm   (FMSUB)
+    //     kSubR → Dd_st0 = Dd_fld * Dm - Dd_st0    (FNMSUB)
+    //   where Dm = Dd_st0 (register) or Dd_mem (memory operand).
+
+    const bool fma_eligible = (arith1 == kMul) &&
+                              (arith2 == kAdd || arith2 == kSub || arith2 == kSubR);
+
+    if (fma_eligible && arith1_is_mem) {
+        // FMA with memory multiply operand: load mem → Dd_mem, then single FMA.
         const int Dd_mem = alloc_free_fpr(*a1);
         const bool is_f32 = (arith_instr->operands[0].mem.size == IROperandSize::S32);
         const int addr_reg =
@@ -877,37 +890,65 @@ static auto try_fuse_fld_arith_arithp(TranslationResult* a1, IRInstr* fld_instr,
         free_gpr(*a1, addr_reg);
         if (is_f32)
             emit_fcvt_s_to_d(buf, Dd_mem, Dd_mem);
-        switch (arith1) {
-            case kAdd:  emit_fadd_f64(buf, Dd_fld, Dd_fld, Dd_mem); break;
-            case kSub:  emit_fsub_f64(buf, Dd_fld, Dd_fld, Dd_mem); break;
-            case kSubR: emit_fsub_f64(buf, Dd_fld, Dd_mem, Dd_fld); break;
-            case kMul:  emit_fmul_f64(buf, Dd_fld, Dd_fld, Dd_mem); break;
-            case kDiv:  emit_fdiv_f64(buf, Dd_fld, Dd_fld, Dd_mem); break;
-            case kDivR: emit_fdiv_f64(buf, Dd_fld, Dd_mem, Dd_fld); break;
+
+        switch (arith2) {
+            case kAdd:  emit_fmadd_f64(buf, Dd_st0, Dd_fld, Dd_mem, Dd_st0);  break;
+            case kSub:  emit_fmsub_f64(buf, Dd_st0, Dd_fld, Dd_mem, Dd_st0);  break;
+            case kSubR: emit_fnmsub_f64(buf, Dd_st0, Dd_fld, Dd_mem, Dd_st0); break;
+            default: break;
         }
         free_fpr(*a1, Dd_mem);
-    } else {
-        // Register form: Dd_fld = op1(Dd_fld, Dd_st0).
-        switch (arith1) {
-            case kAdd:  emit_fadd_f64(buf, Dd_fld, Dd_fld, Dd_st0); break;
-            case kSub:  emit_fsub_f64(buf, Dd_fld, Dd_fld, Dd_st0); break;
-            case kSubR: emit_fsub_f64(buf, Dd_fld, Dd_st0, Dd_fld); break;
-            case kMul:  emit_fmul_f64(buf, Dd_fld, Dd_fld, Dd_st0); break;
-            case kDiv:  emit_fdiv_f64(buf, Dd_fld, Dd_fld, Dd_st0); break;
-            case kDivR: emit_fdiv_f64(buf, Dd_fld, Dd_st0, Dd_fld); break;
-        }
-    }
 
-    // ── 4d: Final popping arithmetic — ARITHp ST(1):
-    //        ST(1) = op2(ST(1), ST(0)) = op2(old_ST0=Dd_st0, intermediate=Dd_fld).
-    //        Result stored back to ST(0) slot (push+pop cancel → same depth=0 slot).
-    switch (arith2) {
-        case kAdd:  emit_fadd_f64(buf, Dd_st0, Dd_st0, Dd_fld); break;
-        case kSub:  emit_fsub_f64(buf, Dd_st0, Dd_st0, Dd_fld); break;
-        case kSubR: emit_fsub_f64(buf, Dd_st0, Dd_fld, Dd_st0); break;
-        case kMul:  emit_fmul_f64(buf, Dd_st0, Dd_st0, Dd_fld); break;
-        case kDiv:  emit_fdiv_f64(buf, Dd_st0, Dd_st0, Dd_fld); break;
-        case kDivR: emit_fdiv_f64(buf, Dd_st0, Dd_fld, Dd_st0); break;
+    } else if (fma_eligible) {
+        // FMA with register multiply operand: Dm = Dd_st0.
+        switch (arith2) {
+            case kAdd:  emit_fmadd_f64(buf, Dd_st0, Dd_fld, Dd_st0, Dd_st0);  break;
+            case kSub:  emit_fmsub_f64(buf, Dd_st0, Dd_fld, Dd_st0, Dd_st0);  break;
+            case kSubR: emit_fnmsub_f64(buf, Dd_st0, Dd_fld, Dd_st0, Dd_st0); break;
+            default: break;
+        }
+
+    } else {
+        // ── Generic two-step path (non-FMA-eligible combinations) ─────────
+        // Step 4c: Middle arithmetic — Dd_fld = op1(Dd_fld, <mul_operand>).
+        if (arith1_is_mem) {
+            const int Dd_mem = alloc_free_fpr(*a1);
+            const bool is_f32 = (arith_instr->operands[0].mem.size == IROperandSize::S32);
+            const int addr_reg =
+                compute_operand_address(*a1, /*is_64bit=*/true, &arith_instr->operands[0], GPR::XZR);
+            emit_fldr_imm(buf, is_f32 ? 2 : 3, Dd_mem, addr_reg, /*imm12=*/0);
+            free_gpr(*a1, addr_reg);
+            if (is_f32)
+                emit_fcvt_s_to_d(buf, Dd_mem, Dd_mem);
+            switch (arith1) {
+                case kAdd:  emit_fadd_f64(buf, Dd_fld, Dd_fld, Dd_mem); break;
+                case kSub:  emit_fsub_f64(buf, Dd_fld, Dd_fld, Dd_mem); break;
+                case kSubR: emit_fsub_f64(buf, Dd_fld, Dd_mem, Dd_fld); break;
+                case kMul:  emit_fmul_f64(buf, Dd_fld, Dd_fld, Dd_mem); break;
+                case kDiv:  emit_fdiv_f64(buf, Dd_fld, Dd_fld, Dd_mem); break;
+                case kDivR: emit_fdiv_f64(buf, Dd_fld, Dd_mem, Dd_fld); break;
+            }
+            free_fpr(*a1, Dd_mem);
+        } else {
+            switch (arith1) {
+                case kAdd:  emit_fadd_f64(buf, Dd_fld, Dd_fld, Dd_st0); break;
+                case kSub:  emit_fsub_f64(buf, Dd_fld, Dd_fld, Dd_st0); break;
+                case kSubR: emit_fsub_f64(buf, Dd_fld, Dd_st0, Dd_fld); break;
+                case kMul:  emit_fmul_f64(buf, Dd_fld, Dd_fld, Dd_st0); break;
+                case kDiv:  emit_fdiv_f64(buf, Dd_fld, Dd_fld, Dd_st0); break;
+                case kDivR: emit_fdiv_f64(buf, Dd_fld, Dd_st0, Dd_fld); break;
+            }
+        }
+
+        // Step 4d: Final popping arithmetic — Dd_st0 = op2(Dd_st0, Dd_fld).
+        switch (arith2) {
+            case kAdd:  emit_fadd_f64(buf, Dd_st0, Dd_st0, Dd_fld); break;
+            case kSub:  emit_fsub_f64(buf, Dd_st0, Dd_st0, Dd_fld); break;
+            case kSubR: emit_fsub_f64(buf, Dd_st0, Dd_fld, Dd_st0); break;
+            case kMul:  emit_fmul_f64(buf, Dd_st0, Dd_st0, Dd_fld); break;
+            case kDiv:  emit_fdiv_f64(buf, Dd_st0, Dd_st0, Dd_fld); break;
+            case kDivR: emit_fdiv_f64(buf, Dd_st0, Dd_fld, Dd_st0); break;
+        }
     }
 
     free_fpr(*a1, Dd_fld);
