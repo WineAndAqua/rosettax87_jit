@@ -1,10 +1,12 @@
 #include "rosetta_core/TranslatorHelpers.hpp"
 
 #include "rosetta_core/AssemblerHelpers.hpp"
+#include "rosetta_core/CoreConfig.h"
 #include "rosetta_core/CoreLog.h"
 #include "rosetta_core/IROperand.h"
 #include "rosetta_core/Register.h"
 #include "rosetta_core/RuntimeRoutine.h"
+#include "rosetta_config/Config.h"
 
 #ifdef ROSETTA_RUNTIME
 #include "rosetta_core/RuntimeLibC.h"
@@ -39,7 +41,9 @@ void free_gpr(TranslationResult& translation, int reg) {
 }
 
 int alloc_fpr(TranslationResult& translation, int pool_index) {
-    const int reg = kFprScratchPool[pool_index];
+    const bool extended = g_rosetta_config && g_rosetta_config->extended_fpr_scratch;
+    const uint8_t* pool = extended ? kFprScratchPoolExtended : kFprScratchPool;
+    const int reg = pool[pool_index];
     const uint32_t mask = 1u << reg;
     assert((translation.free_fpr_mask & mask) != 0 && "alloc_fpr: pool slot already occupied");
     translation.free_fpr_mask &= ~mask;
@@ -55,7 +59,9 @@ auto alloc_free_fpr(TranslationResult& translation) -> int {
 }
 
 void free_fpr(TranslationResult& translation, int reg) {
-    if ((1u << reg) & kFprScratchMask)
+    const bool extended = g_rosetta_config && g_rosetta_config->extended_fpr_scratch;
+    const uint32_t active_mask = extended ? kFprScratchMaskExt : kFprScratchMask;
+    if ((1u << reg) & active_mask)
         translation.free_fpr_mask |= 1u << reg;
 }
 

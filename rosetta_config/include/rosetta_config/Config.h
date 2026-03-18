@@ -92,7 +92,8 @@ struct RosettaConfig {
     uint8_t  fast_round;             // ROSETTA_X87_FAST_ROUND=1 — skip RC dispatch, always round-to-nearest
     uint8_t  disable_deferred_fxch;  // ROSETTA_X87_DISABLE_DEFERRED_FXCH=1 — disable OPT-G
     uint8_t  disable_x87_ir;         // ROSETTA_X87_DISABLE_IR=1 — disable IR optimization pipeline
-    uint8_t  _pad[4];
+    uint8_t  extended_fpr_scratch;   // ROSETTA_X87_EXTENDED_FPR_SCRATCH=1 — expand FPR scratch pool from 8 (V24–V31) to 16 (V16–V31)
+    uint8_t  _pad[3];
     uint64_t disabled_ops_mask;      // ROSETTA_X87_DISABLE_OPS=fadd,fsub,...
     uint64_t disabled_fusions_mask;  // ROSETTA_X87_DISABLE_FUSIONS=fld_arithp,...
 };
@@ -116,4 +117,5 @@ inline bool fusion_is_disabled(const RosettaConfig& cfg, FusionId id) {
 //   ROSETTA_X87_DISABLE_ALL_FUSIONS=1    disable all fusion patterns
 //   ROSETTA_X87_FAST_ROUND=1             skip RC dispatch; always emit FCVTNS/FRINTN (nearest only)
 //   ROSETTA_X87_DISABLE_IR=1             disable IR-based optimization pipeline
+//   ROSETTA_X87_EXTENDED_FPR_SCRATCH=1   expand FPR scratch pool from 8 (V24–V31) to 16 (V16–V31)
 RosettaConfig parse_config_from_env();
