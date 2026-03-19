@@ -417,6 +417,27 @@ bool build(Context& ctx, IRInstr* instr_array, int64_t num_instrs, int64_t start
                 break;
             }
 
+            // ── Control word ────────────────────────────────────────────
+            case kOpcodeName_fldcw: {
+                // Load u16 from mem, write to X87State.control_word.
+                auto id = ctx.add_node(Op::StoreCW);
+                if (id < 0) { ok = false; break; }
+                ctx.nodes[id].mem_operand = &instr->operands[0];
+                break;
+            }
+            case kOpcodeName_fnstcw: {
+                // Read X87State.control_word, store u16 to mem.
+                auto id = ctx.add_node(Op::LoadCW);
+                if (id < 0) { ok = false; break; }
+                ctx.nodes[id].mem_operand = &instr->operands[0];
+                break;
+            }
+
+            // ── FNOP ────────────────────────────────────────────────────
+            case kOpcodeName_fnop:
+                // No operation; just let the run continue.
+                break;
+
             // ── Bail on everything else ─────────────────────────────────
             default:
                 ok = false;

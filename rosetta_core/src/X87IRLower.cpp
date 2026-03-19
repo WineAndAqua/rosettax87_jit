@@ -422,6 +422,30 @@ void lower(Context& ctx, TranslationResult* result) {
             break;
         }
 
+        // ── Control word ────────────────────────────────────────────────
+        case Op::StoreCW: {
+            // FLDCW: load u16 from memory, write to X87State.control_word.
+            int addr = compute_operand_address(*result, true, n.mem_operand, GPR::XZR);
+            int Wd_cw = alloc_free_gpr(*result);
+            emit_ldr_str_imm(buf, /*size=*/1, /*is_fp=*/0, /*LDR*/1, /*imm12=*/0, addr, Wd_cw);
+            free_gpr(*result, addr);
+            // STRH Wd_cw, [Xbase, #0]  — control_word is at offset 0x00 → imm12=0
+            emit_ldr_str_imm(buf, /*size=*/1, /*is_fp=*/0, /*STR*/0, /*imm12=*/0, Xbase, Wd_cw);
+            free_gpr(*result, Wd_cw);
+            break;
+        }
+        case Op::LoadCW: {
+            // FNSTCW: read X87State.control_word, store u16 to memory.
+            int Wd_cw = alloc_free_gpr(*result);
+            // LDRH Wd_cw, [Xbase, #0]  — control_word is at offset 0x00 → imm12=0
+            emit_ldr_str_imm(buf, /*size=*/1, /*is_fp=*/0, /*LDR*/1, /*imm12=*/0, Xbase, Wd_cw);
+            int addr = compute_operand_address(*result, true, n.mem_operand, GPR::XZR);
+            emit_ldr_str_imm(buf, /*size=*/1, /*is_fp=*/0, /*STR*/0, /*imm12=*/0, addr, Wd_cw);
+            free_gpr(*result, addr);
+            free_gpr(*result, Wd_cw);
+            break;
+        }
+
         // ── FSTSW AX ───────────────────────────────────────────────────
         case Op::FStsw: {
             static constexpr int16_t kSwImm12 = kX87StatusWordOff / 2;  // = 1

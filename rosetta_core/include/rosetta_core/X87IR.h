@@ -51,6 +51,10 @@ enum class Op : uint8_t {
 
     // Status word read
     FStsw,          // store status_word to AX (consumes CC from prior FCmp/FTst)
+
+    // Control word
+    StoreCW,        // FLDCW: load u16 from memory, write to X87State.control_word
+    LoadCW,         // FNSTCW: read X87State.control_word, store u16 to memory
 };
 
 enum NodeFlags : uint8_t {

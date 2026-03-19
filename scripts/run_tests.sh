@@ -48,6 +48,7 @@ ALL_TESTS=(
     test_readst_elide
     test_fxch
     test_fxch_initial
+    test_fldcw
 )
 
 RED='\033[0;31m'
