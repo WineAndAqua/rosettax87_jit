@@ -2838,4 +2838,108 @@ auto translate_ficom(TranslationResult* a1, IRInstr* a2) -> void {
 }
 
 
+// =============================================================================
+// FLDCW — load x87 control word from memory.
+//
+// x87 semantics:
+//   control_word ← mem16
+//
+// No stack mutation — TOP is unchanged.
+//
+// Instruction sequence:
+//   1. compute address of memory operand → addr_reg
+//   2. LDRH Wd_cw, [addr_reg]           — load u16 from memory
+//   3. STRH Wd_cw, [Xbase, #0]          — write to X87State.control_word
+//
+// Register allocation:
+//   Xbase    (gpr pool 0) — X87State base
+//   Wd_top   (gpr pool 1) — current TOP (unused but held by x87_begin)
+//   Wd_tmp   (gpr pool 2) — scratch
+//   addr_reg (free gpr)   — resolved memory operand address
+//   Wd_cw    (free gpr)   — loaded control word value
+// =============================================================================
+auto translate_fldcw(TranslationResult* a1, IRInstr* a2) -> void {
+    AssemblerBuffer& buf = a1->insn_buf;
+    auto [Xbase, Wd_top] = x87_begin(*a1, buf);
+
+    const int Wd_tmp = alloc_gpr(*a1, 2);
+
+    // Flush deferred TOP before writing CW — subsequent instructions that
+    // re-enter x87_begin will reload TOP from memory.
+    x87_flush_top(buf, *a1, Xbase, Wd_top, Wd_tmp);
+
+    const int addr_reg = compute_operand_address(*a1, /*is_64bit=*/true, &a2->operands[0], GPR::XZR);
+    const int Wd_cw = alloc_free_gpr(*a1);
+
+    // LDRH Wd_cw, [addr_reg]
+    emit_ldr_str_imm(buf, /*size=*/1, /*is_fp=*/0, /*LDR*/1, /*imm12=*/0, addr_reg, Wd_cw);
+    free_gpr(*a1, addr_reg);
+
+    // STRH Wd_cw, [Xbase, #0]  — control_word is at offset 0x00
+    emit_ldr_str_imm(buf, /*size=*/1, /*is_fp=*/0, /*STR*/0, /*imm12=*/0, Xbase, Wd_cw);
+    free_gpr(*a1, Wd_cw);
+
+    x87_end(*a1, buf, Xbase, Wd_top, Wd_tmp);
+    free_gpr(*a1, Wd_tmp);
+}
+
+// =============================================================================
+// FNSTCW — store x87 control word to memory.
+//
+// x87 semantics:
+//   mem16 ← control_word
+//
+// No stack mutation — TOP is unchanged.
+//
+// Instruction sequence:
+//   1. LDRH Wd_cw, [Xbase, #0]          — read X87State.control_word
+//   2. compute address of memory operand → addr_reg
+//   3. STRH Wd_cw, [addr_reg]           — store u16 to memory
+//
+// Register allocation:
+//   Xbase    (gpr pool 0) — X87State base
+//   Wd_top   (gpr pool 1) — current TOP (unused but held by x87_begin)
+//   Wd_tmp   (gpr pool 2) — scratch
+//   Wd_cw    (free gpr)   — loaded control word value
+//   addr_reg (free gpr)   — resolved memory operand address
+// =============================================================================
+auto translate_fnstcw(TranslationResult* a1, IRInstr* a2) -> void {
+    AssemblerBuffer& buf = a1->insn_buf;
+    auto [Xbase, Wd_top] = x87_begin(*a1, buf);
+
+    const int Wd_tmp = alloc_gpr(*a1, 2);
+    const int Wd_cw = alloc_free_gpr(*a1);
+
+    // LDRH Wd_cw, [Xbase, #0]  — control_word is at offset 0x00
+    emit_ldr_str_imm(buf, /*size=*/1, /*is_fp=*/0, /*LDR*/1, /*imm12=*/0, Xbase, Wd_cw);
+
+    const int addr_reg = compute_operand_address(*a1, /*is_64bit=*/true, &a2->operands[0], GPR::XZR);
+
+    // STRH Wd_cw, [addr_reg]
+    emit_ldr_str_imm(buf, /*size=*/1, /*is_fp=*/0, /*STR*/0, /*imm12=*/0, addr_reg, Wd_cw);
+    free_gpr(*a1, addr_reg);
+    free_gpr(*a1, Wd_cw);
+
+    x87_end(*a1, buf, Xbase, Wd_top, Wd_tmp);
+    free_gpr(*a1, Wd_tmp);
+}
+
+// =============================================================================
+// FNOP — x87 no-operation.
+//
+// x87 semantics:
+//   (none — no state change)
+//
+// The per-instruction handler simply maintains cache continuity so that
+// surrounding instructions in the same run keep their deferred state.
+// =============================================================================
+auto translate_fnop(TranslationResult* a1, IRInstr* /*a2*/) -> void {
+    AssemblerBuffer& buf = a1->insn_buf;
+    auto [Xbase, Wd_top] = x87_begin(*a1, buf);
+
+    const int Wd_tmp = alloc_gpr(*a1, 2);
+    x87_end(*a1, buf, Xbase, Wd_top, Wd_tmp);
+    free_gpr(*a1, Wd_tmp);
+}
+
 };  // namespace TranslatorX87

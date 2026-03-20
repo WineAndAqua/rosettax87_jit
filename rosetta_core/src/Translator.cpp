@@ -330,6 +330,18 @@ auto Translator::translate_instruction(TranslationResult* translation_result, IR
                 TranslatorX87::translate_fcmov(translation_result, cur_instr);
                 break;
 
+            case Opcode::kOpcodeName_fldcw:
+                TranslatorX87::translate_fldcw(translation_result, cur_instr);
+                break;
+
+            case Opcode::kOpcodeName_fnstcw:
+                TranslatorX87::translate_fnstcw(translation_result, cur_instr);
+                break;
+
+            case Opcode::kOpcodeName_fnop:
+                TranslatorX87::translate_fnop(translation_result, cur_instr);
+                break;
+
             default:
                 // Hand translation back to rosetta, we don't support this instruction - invalidate
                 // cache.
