@@ -79,4 +79,6 @@ auto translate_fisubr(TranslationResult* a1, IRInstr* a2) -> void;
 
 auto translate_fcmov(TranslationResult* a1, IRInstr* a2) -> void;
 
+auto translate_ficom(TranslationResult* a1, IRInstr* a2) -> void;
+
 };  // namespace TranslatorX87

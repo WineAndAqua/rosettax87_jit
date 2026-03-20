@@ -74,6 +74,8 @@ static OpcodeId opcode_to_id(uint16_t op) {
         case O::kOpcodeName_fcmovne:  return I::fcmovne;
         case O::kOpcodeName_fcmovu:   return I::fcmovu;
         case O::kOpcodeName_fcmovnu:  return I::fcmovnu;
+        case O::kOpcodeName_ficom:    return I::ficom;
+        case O::kOpcodeName_ficomp:   return I::ficomp;
         default:                      return I::kCount;
     }
 }
@@ -310,6 +312,11 @@ auto Translator::translate_instruction(TranslationResult* translation_result, IR
 
             case Opcode::kOpcodeName_fisubr:
                 TranslatorX87::translate_fisubr(translation_result, cur_instr);
+                break;
+
+            case Opcode::kOpcodeName_ficom:
+            case Opcode::kOpcodeName_ficomp:
+                TranslatorX87::translate_ficom(translation_result, cur_instr);
                 break;
 
             case Opcode::kOpcodeName_fcmovb:

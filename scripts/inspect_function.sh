@@ -43,6 +43,7 @@ ALL_OPCODES=(
     fcomi fcomip fucomi fucomip
     ftst fist fisubr
     fcmovb fcmovbe fcmove fcmovnb fcmovnbe fcmovne fcmovu fcmovnu
+    ficom ficomp
 )
 
 ALL_FUSIONS=(

@@ -62,6 +62,7 @@ ALL_OPCODES=(
     fcomi fcomip fucomi fucomip
     ftst fist fisubr
     fcmovb fcmovbe fcmove fcmovnb fcmovnbe fcmovne fcmovu fcmovnu
+    ficom ficomp
 )
 
 # Per-opcode test mapping
@@ -124,6 +125,8 @@ OPCODE_TESTS[fcmovnbe]="test_x87_full"
 OPCODE_TESTS[fcmovne]="test_x87_full test_deep_stack"
 OPCODE_TESTS[fcmovu]="test_x87_full"
 OPCODE_TESTS[fcmovnu]="test_x87_full"
+OPCODE_TESTS[ficom]="test_ficom"
+OPCODE_TESTS[ficomp]="test_ficom"
 
 # Colors
 RED='\033[0;31m'

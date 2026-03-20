@@ -151,6 +151,24 @@ static bool build_fcom(Context& ctx, IRInstr* instr, int num_pops, bool is_fcomp
     return true;
 }
 
+// ── FICOM / FICOMP ──────────────────────────────────────────────────────────
+
+static bool build_ficom(Context& ctx, IRInstr* instr, bool is_popping) {
+    int16_t lhs = ctx.resolve(0);
+    if (lhs < 0) return false;
+
+    // FICOM/FICOMP: operands[0] = m16int/m32int MemRef (like FIADD).
+    int16_t rhs = build_int_load(ctx, &instr->operands[0]);
+    if (rhs < 0) return false;
+
+    auto id = ctx.add_node(Op::FCmp, lhs, rhs);
+    if (id < 0) return false;
+    ctx.last_fcmp = id;
+
+    if (is_popping) ctx.pop();
+    return true;
+}
+
 // ── FCOMI / FCOMIP / FUCOMI / FUCOMIP ───────────────────────────────────────
 
 static bool build_fcomi(Context& ctx, IRInstr* instr, bool is_popping) {
@@ -440,6 +458,13 @@ bool build(Context& ctx, IRInstr* instr_array, int64_t num_instrs, int64_t start
             case kOpcodeName_fcompp:
             case kOpcodeName_fucompp:
                 ok = build_fcom(ctx, instr, 2, true);
+                break;
+
+            case kOpcodeName_ficom:
+                ok = build_ficom(ctx, instr, false);
+                break;
+            case kOpcodeName_ficomp:
+                ok = build_ficom(ctx, instr, true);
                 break;
 
             case kOpcodeName_fcomi:

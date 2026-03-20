@@ -2767,4 +2767,75 @@ auto translate_fcmov(TranslationResult* a1, IRInstr* a2) -> void {
 }
 
 
+// =============================================================================
+// FICOM / FICOMP — compare ST(0) with integer memory operand.
+//
+// x87 semantics:
+//   FICOM  m16int/m32int   — compare ST(0) with (int)mem, set CC in status_word
+//   FICOMP m16int/m32int   — same + pop
+//
+// Rosetta encoding:
+//   DE /2: FICOM  m16int   operands = [m16int MemRef, ST(0)]
+//   DA /2: FICOM  m32int   operands = [m32int MemRef, ST(0)]
+//   DE /3: FICOMP m16int   operands = [m16int MemRef, ST(0)]
+//   DA /3: FICOMP m32int   operands = [m32int MemRef, ST(0)]
+//
+// Combines integer load pattern from translate_fiadd with comparison+CC
+// pattern from translate_fcom.
+// =============================================================================
+auto translate_ficom(TranslationResult* a1, IRInstr* a2) -> void {
+    AssemblerBuffer& buf = a1->insn_buf;
+    auto [Xbase, Wd_top] = x87_begin(*a1, buf);
+    const int Xst_base = x87_get_st_base(*a1);
+
+    const bool is_popping = (a2->opcode == kOpcodeName_ficomp);
+    const bool is_m16 = (a2->operands[0].mem.size == IROperandSize::S16);
+
+    const int Wd_tmp = alloc_gpr(*a1, 2);
+    const int Wd_tmp2 = alloc_gpr(*a1, 3);
+    const int Dd_st0 = alloc_free_fpr(*a1);
+    const int Dd_int = alloc_free_fpr(*a1);
+
+    // Step 1: load ST(0).
+    emit_load_st(buf, Xbase, Wd_top, resolve_depth(*a1, 0), Wd_tmp, Dd_st0, Xst_base);
+
+    // Step 2: compute source memory address.
+    const int addr_reg =
+        compute_operand_address(*a1, /*is_64bit=*/true, &a2->operands[0], GPR::XZR);
+
+    // Step 3: load integer from memory.
+    if (is_m16) {
+        emit_ldr_str_imm(buf, /*size=*/1 /*16-bit*/, /*is_fp=*/0, /*opc=*/1 /*LDR*/,
+                         /*imm12=*/0, addr_reg, addr_reg);
+        // SXTH: sign-extend bits[15:0] → W
+        emit_bitfield(buf, /*is_64bit=*/0, /*opc=*/0 /*SBFM*/, /*N=*/0,
+                      /*immr=*/0, /*imms=*/15, addr_reg, addr_reg);
+    } else {
+        emit_ldr_str_imm(buf, /*size=*/2 /*32-bit*/, /*is_fp=*/0, /*opc=*/1 /*LDR*/,
+                         /*imm12=*/0, addr_reg, addr_reg);
+    }
+
+    // Step 4: convert signed integer W → f64.
+    emit_scvtf(buf, /*is_64bit_int=*/0, /*ftype=*/1, Dd_int, addr_reg);
+    free_gpr(*a1, addr_reg);
+
+    // Step 5: save NZCV, compare, map flags.
+    emit_mrs_nzcv(buf, Wd_tmp2);
+    emit_fcmp_f64(buf, Dd_st0, Dd_int);
+    free_fpr(*a1, Dd_int);
+    free_fpr(*a1, Dd_st0);
+
+    // Step 6: branchless FCMP NZCV → x87 CC bits + RMW status_word.
+    emit_fcom_cc_pack(buf, *a1, Wd_tmp, Wd_tmp2);
+    emit_fcom_cc_write_sw(buf, *a1, Xbase, Wd_tmp);
+
+    // Step 7: pop if FICOMP.
+    if (is_popping)
+        x87_pop(buf, *a1, Xbase, Wd_top, Wd_tmp);
+
+    x87_end(*a1, buf, Xbase, Wd_top, Wd_tmp);
+    free_gpr(*a1, Wd_tmp);
+}
+
+
 };  // namespace TranslatorX87

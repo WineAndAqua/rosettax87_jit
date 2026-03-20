@@ -53,6 +53,7 @@ ALL_TESTS=(
     test_frndint
     test_fistp_multi
     test_fcmov
+    test_ficom
 )
 
 RED='\033[0;31m'

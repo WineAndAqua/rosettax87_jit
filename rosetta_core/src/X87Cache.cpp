@@ -70,6 +70,8 @@ static bool is_handled_x87(uint16_t op) {
         case kOpcodeName_fcmovne:
         case kOpcodeName_fcmovu:
         case kOpcodeName_fcmovnu:
+        case kOpcodeName_ficom:
+        case kOpcodeName_ficomp:
             return true;
         default:
             return false;
@@ -200,6 +202,8 @@ static OpcodeId opcode_to_id_local(uint16_t op) {
         case O::kOpcodeName_fcmovne:  return I::fcmovne;
         case O::kOpcodeName_fcmovu:   return I::fcmovu;
         case O::kOpcodeName_fcmovnu:  return I::fcmovnu;
+        case O::kOpcodeName_ficom:    return I::ficom;
+        case O::kOpcodeName_ficomp:   return I::ficomp;
         default:                      return I::kCount;
     }
 }

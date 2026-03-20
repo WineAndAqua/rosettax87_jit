@@ -64,7 +64,9 @@ enum class OpcodeId : int {
     fcmovu,
     fcmovnu,
     fisttp,
-    kCount  // = 59, fits in uint64_t
+    ficom,
+    ficomp,
+    kCount  // = 61, fits in uint64_t
 };
 
 // Bit positions for peephole fusion patterns in TranslatorX87Fusion.cpp.
