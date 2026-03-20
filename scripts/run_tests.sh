@@ -54,6 +54,7 @@ ALL_TESTS=(
     test_fistp_multi
     test_fcmov
     test_ficom
+    test_rc_recache
 )
 
 RED='\033[0;31m'

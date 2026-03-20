@@ -239,7 +239,7 @@ void lower(Context& ctx, TranslationResult* result) {
         for (int i = 0; i < ctx.num_nodes; i++) {
             auto& n = ctx.nodes[i];
             if (n.flags & kDead) continue;
-            if (n.op == Op::StoreCW) { rc_count = 0; continue; }
+            if (n.op == Op::StoreCW) { continue; }
             bool is_rc = (n.op == Op::FRndInt) ||
                 ((n.op == Op::StoreI16 || n.op == Op::StoreI32 || n.op == Op::StoreI64)
                  && !(n.flags & kTruncate));
@@ -623,9 +623,15 @@ void lower(Context& ctx, TranslationResult* result) {
             free_gpr(*result, addr);
             // STRH Wd_cw, [Xbase, #0]  — control_word is at offset 0x00 → imm12=0
             emit_ldr_str_imm(buf, /*size=*/1, /*is_fp=*/0, /*STR*/0, /*imm12=*/0, Xbase, Wd_cw);
+            // Re-cache RC from the just-written control word.
+            if (Wd_rc_cached >= 0) {
+                // UBFX Wd_rc_cached, Wd_cw, #10, #2
+                emit_bitfield(buf, 0, 2, 0, 10, 11, Wd_cw, Wd_rc_cached);
+                rc_cache_valid = true;
+            } else {
+                rc_cache_valid = false;
+            }
             free_gpr(*result, Wd_cw);
-            // Invalidate RC cache — next RC consumer must re-read control_word.
-            rc_cache_valid = false;
             break;
         }
         case Op::LoadCW: {
