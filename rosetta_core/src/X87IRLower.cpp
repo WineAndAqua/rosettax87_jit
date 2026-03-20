@@ -778,6 +778,143 @@ void lower(Context& ctx, TranslationResult* result) {
     }
 }
 
+// ── Peak GPR pressure query ──────────────────────────────────────────────────
+//
+// Returns the maximum number of scratch GPRs simultaneously in use during
+// lowering (permanent + transient).  If this exceeds the available pool the
+// caller should bail out to the ordinary per-instruction translation path.
+//
+// Permanent GPRs (held for the entire lower() duration):
+//   - Xbase (pool 0), Wd_top (pool 1), Wd_tmp (pool 2), Xst_base (pool 6) = 4
+//   - Wd_rc_cached (pool 3) when RC caching is active = +1
+//
+// Per-node transient GPR demand (mirrors the lowering code exactly):
+//   - ReadSt, Const*, FAdd/FSub/FMul/FDiv, FMA*, FNeg/FAbs/FSqrt, FCSel: 0
+//   - LoadF64, LoadF32, StoreF64, StoreF32: 1 (addr from compute_operand_address)
+//   - LoadI16/I32/I64: 2 (addr + Wd_val)
+//   - StoreI16/I32/I64: 2 (Wd_int + addr)
+//   - FRndInt without RC cache: 1 (Wd_rc via alloc_gpr(3))
+//   - FCmp/FTst: 4 peak inside emit_fcom_cc_pack (Wd_save + Wd_packed + Wd_cc + Wd_vs)
+//     If kFcomFused, Wd_packed stays alive until consumed by FStsw.
+//   - FComI: 3 (Wd_z + Wd_v + Wd_c)
+//   - FStsw (fused): 2 (Wd_packed held from FCmp + Wd_sw_inner inside emit_fcom_cc_write_sw,
+//     or Wd_sw + Wd_adj when top_delta != 0)
+//   - FStsw (non-fused): 2 (Wd_sw + Wd_adj if top_delta != 0)
+//   - StoreCW/LoadCW: 2 (addr + Wd_cw)
+//   - Epilogue (top_delta != 0): 2 (Wd_tmp2 + Wd_tagw)
+//
+// Fused FCmp/FTst holds 1 GPR (Wd_packed) alive across nodes until FStsw.
+// We track this as a "held" count that overlaps with per-node transient demand.
+int peak_live_gprs(const Context& ctx) {
+    // Determine if RC caching will be active (same logic as lower()).
+    bool rc_cache = false;
+    if (!(g_rosetta_config && g_rosetta_config->fast_round)) {
+        int rc_count = 0;
+        for (int i = 0; i < ctx.num_nodes; i++) {
+            const auto& n = ctx.nodes[i];
+            if (n.flags & kDead) continue;
+            if (n.op == Op::StoreCW) continue;
+            bool is_rc = (n.op == Op::FRndInt) ||
+                ((n.op == Op::StoreI16 || n.op == Op::StoreI32 || n.op == Op::StoreI64)
+                 && !(n.flags & kTruncate));
+            if (is_rc && ++rc_count >= 2) { rc_cache = true; break; }
+        }
+    }
+
+    int pinned = 4;  // Xbase, Wd_top, Wd_tmp, Xst_base
+    if (rc_cache) pinned++;  // Wd_rc_cached
+
+    // Simulate GPR pressure across IR nodes.
+    // "held" tracks GPRs held alive across node boundaries (fused FCmp→FStsw).
+    int held = 0;
+    int peak = pinned;  // at minimum, permanent GPRs
+
+    for (int i = 0; i < ctx.num_nodes; i++) {
+        const auto& n = ctx.nodes[i];
+        if (n.flags & kDead) continue;
+
+        int transient = 0;  // per-node transient GPR demand
+
+        switch (n.op) {
+        // No transient GPRs
+        case Op::ReadSt:
+        case Op::ConstZero: case Op::ConstOne: case Op::ConstF64:
+        case Op::FAdd: case Op::FSub: case Op::FMul: case Op::FDiv:
+        case Op::FMAdd: case Op::FMSub: case Op::FNMSub:
+        case Op::FNeg: case Op::FAbs: case Op::FSqrt:
+        case Op::FCSel:
+            break;
+
+        // 1 GPR: addr from compute_operand_address
+        case Op::LoadF64: case Op::LoadF32:
+        case Op::StoreF64: case Op::StoreF32:
+            transient = 1;
+            break;
+
+        // 2 GPRs: addr + Wd_val
+        case Op::LoadI16: case Op::LoadI32: case Op::LoadI64:
+            transient = 2;
+            break;
+
+        // 2 GPRs: Wd_int + addr
+        case Op::StoreI16: case Op::StoreI32: case Op::StoreI64:
+            transient = 2;
+            break;
+
+        // FRndInt: 1 GPR if no RC cache (alloc_gpr(3) for Wd_rc), 0 with cache
+        case Op::FRndInt:
+            if (!rc_cache) transient = 1;
+            break;
+
+        // FCmp/FTst: 4 peak inside emit_fcom_cc_pack
+        // (Wd_save + Wd_packed + Wd_cc + Wd_vs simultaneously live)
+        // If fused, Wd_packed stays alive after → held++
+        case Op::FCmp: case Op::FTst:
+            transient = 4;
+            if (n.flags & kFcomFused) {
+                // After the node, Wd_packed remains held until FStsw
+                held++;
+            }
+            break;
+
+        // FComI: 3 GPRs (Wd_z + Wd_v + Wd_c)
+        case Op::FComI:
+            transient = 3;
+            break;
+
+        // FStsw: fused path holds Wd_packed (counted in held) + up to 2 more
+        // Non-fused: up to 2 (Wd_sw + Wd_adj)
+        case Op::FStsw:
+            // emit_fcom_cc_write_sw adds 1 internally (Wd_sw), then the LDRH
+            // block adds Wd_sw + possibly Wd_adj.
+            // Fused: Wd_packed(held) + max(Wd_sw_inner=1, Wd_sw+Wd_adj=2) = 2
+            // Non-fused: max(Wd_sw+Wd_adj) = 2
+            transient = 2;
+            if (n.flags & kFcomFused) {
+                // Wd_packed is released during this node
+                held--;
+            }
+            break;
+
+        // StoreCW/LoadCW: 2 GPRs (addr + Wd_cw)
+        case Op::StoreCW: case Op::LoadCW:
+            transient = 2;
+            break;
+        }
+
+        int node_total = pinned + held + transient;
+        if (node_total > peak) peak = node_total;
+    }
+
+    // Epilogue: if top_delta != 0, needs 2 more transient GPRs (Wd_tmp2 + Wd_tagw)
+    if (ctx.top_delta != 0) {
+        int epilogue_total = pinned + held + 2;
+        if (epilogue_total > peak) peak = epilogue_total;
+    }
+
+    return peak;
+}
+
 // ── Peak FPR pressure query ──────────────────────────────────────────────────
 //
 // Simulates the liveness model used by the lowering pass and returns the
@@ -884,6 +1021,16 @@ int compile_run(TranslationResult* result, IRInstr* instr_array, int64_t num_ins
     while (fpr_pool) { available++; fpr_pool &= fpr_pool - 1; }
     if (peak_live_fprs(ctx) > available) {
         return 0;
+    }
+
+    // Gate lowering on GPR pressure vs. available pool.
+    {
+        uint32_t gpr_pool = result->free_gpr_mask;
+        int gpr_available = 0;
+        while (gpr_pool) { gpr_available++; gpr_pool &= gpr_pool - 1; }
+        if (peak_live_gprs(ctx) > gpr_available) {
+            return 0;
+        }
     }
 
     lower(ctx, result);
