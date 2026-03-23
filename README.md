@@ -68,6 +68,12 @@ These flags are primarily useful for narrowing down bugs by selectively disablin
 | `ROSETTA_X87_DISABLE_ALL_FUSIONS=1` | Disable all instruction fusions |
 | `ROSETTA_X87_DISABLE_OPS=op1,op2,...` | Disable specific opcodes (comma-separated) |
 | `ROSETTA_X87_DISABLE_FUSIONS=f1,f2,...` | Disable specific fusions (comma-separated) |
+| `ROSETTA_X87_LOGS=1` | Enable verbose logging output from the loader |
+| `ROSETTA_X87_FORCE_ATTACH=1` | Always attach the debugger, bypassing the automatic x64 detection |
+
+### Automatic x64 Bypass
+
+When used with Wine, `runtime_loader` automatically detects whether the Windows executable is 32-bit (x86) or 64-bit (x64) by reading its PE headers. 64-bit programs do not use x87 instructions, so the loader passes them through directly without attaching the debugger.
 
 ## Usage with Wine
 

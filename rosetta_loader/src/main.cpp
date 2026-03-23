@@ -1,18 +1,21 @@
 #include <mach-o/dyld.h>
 #include <mach-o/dyld_images.h>
 #include <mach/mach_vm.h>
+#include <rosetta_config/Config.h>
 #include <stdint.h>
 #include <sys/mman.h>
 #include <sys/ptrace.h>
 
 #include <cstdio>
+#include <cstring>
+#include <filesystem>
 #include <map>
+#include <string>
 #include <vector>
 
 #include "macho_loader.hpp"
 #include "offset_finder.hpp"
 #include "types.h"
-#include <rosetta_config/Config.h>
 
 const char* logsEnabled = nullptr;
 
@@ -472,6 +475,94 @@ public:
 // Define the static constant outside the class
 const unsigned int MuhDebugger::AARCH64_BREAKPOINT = 0xD4200000;
 
+// Resolve a Windows-style path (e.g. "C:\foo\bar.exe") to a macOS path
+// using the Wine prefix dosdevices mapping.
+static std::string resolveWinePath(const char* winPath) {
+    const char* prefix = getenv("WINEPREFIX");
+    std::string winePrefix = prefix ? prefix : (std::string(getenv("HOME")) + "/.wine");
+
+    // Find drive letter (e.g. "C:")
+    if (strlen(winPath) < 3 || winPath[1] != ':')
+        return {};
+
+    char driveLetter = tolower(winPath[0]);
+    std::string dosDevice = winePrefix + "/dosdevices/" + driveLetter + ":";
+
+    // Resolve the symlink to get the real drive root
+    char resolved[PATH_MAX];
+    if (!realpath(dosDevice.c_str(), resolved))
+        return {};
+
+    // Convert the rest of the path: skip "C:", replace backslashes
+    std::string result = resolved;
+    const char* rest = winPath + 2;
+    for (; *rest; rest++) {
+        result += (*rest == '\\') ? '/' : *rest;
+    }
+    return result;
+}
+
+// Read PE headers to determine if a Windows executable is 32-bit (x86).
+// Returns true if the file is a 32-bit PE, false otherwise.
+static bool isX86PE(const std::string& path) {
+    FILE* f = fopen(path.c_str(), "rb");
+    if (!f)
+        return false;
+
+    // Read DOS header magic ("MZ")
+    uint16_t dosMagic;
+    if (fread(&dosMagic, 2, 1, f) != 1 || dosMagic != 0x5A4D) {
+        fclose(f);
+        return false;
+    }
+
+    // Read PE header offset from DOS header at 0x3C
+    uint32_t peOffset;
+    fseek(f, 0x3C, SEEK_SET);
+    if (fread(&peOffset, 4, 1, f) != 1) {
+        fclose(f);
+        return false;
+    }
+
+    // Read PE signature ("PE\0\0") and Machine field
+    fseek(f, peOffset, SEEK_SET);
+    uint32_t peSig;
+    if (fread(&peSig, 4, 1, f) != 1 || peSig != 0x00004550) {
+        fclose(f);
+        return false;
+    }
+
+    uint16_t machine;
+    if (fread(&machine, 2, 1, f) != 1) {
+        fclose(f);
+        return false;
+    }
+    fclose(f);
+
+    return machine == 0x014C; // IMAGE_FILE_MACHINE_I386
+}
+
+// Find a Windows .exe path in argv and check if it's a 32-bit x86 program.
+// Returns true if a 32-bit PE was found (needs x87 JIT), false to bypass.
+static bool needsX87JIT(int argc, char* argv[]) {
+    for (int i = 2; i < argc; i++) {
+        // Look for Windows-style paths (drive letter + colon)
+        if (strlen(argv[i]) >= 3 && argv[i][1] == ':') {
+            std::string nativePath = resolveWinePath(argv[i]);
+            if (nativePath.empty()) {
+                LOG("Could not resolve Wine path '%s', assuming x86.\n", argv[i]);
+                return true;
+            }
+            LOG("Resolved '%s' -> '%s'\n", argv[i], nativePath.c_str());
+            bool x86 = isX86PE(nativePath);
+            LOG("PE architecture: %s\n", x86 ? "x86 (32-bit)" : "x64 (64-bit)");
+            return x86;
+        }
+    }
+    // No Windows path found, default to attaching
+    return true;
+}
+
 int main(int argc, char* argv[]) {
     if (argc < 2) {
         fprintf(stderr, "%s <path to program>\n", argv[0]);
@@ -479,6 +570,14 @@ int main(int argc, char* argv[]) {
     }
 
     logsEnabled = getenv("ROSETTA_X87_LOGS");
+
+    // Skip debugger attachment for 64-bit Windows programs (no x87 needed)
+    if (!getenv("ROSETTA_X87_FORCE_ATTACH") && !needsX87JIT(argc, argv)) {
+        LOG("Program is x64, skipping x87 JIT. Passing through.\n");
+        execv(argv[1], &argv[1]);
+        perror("execv");
+        return 1;
+    }
 
     LOG("Launching debugger.\n");
 
@@ -533,84 +632,7 @@ int main(int argc, char* argv[]) {
 
     dbg.writeMemory(runtimeBase + offsetFinder.offsetDisableAot_, &g_disable_aot_value,
                     sizeof(g_disable_aot_value));
-#if 0
 
-// __bss:000000000003B280 ??                      g_print_ir      % 1                     ; DATA XREF: sub_D048:loc_D408↑o
-    const uintptr_t g_print_ir_offset = 0x3B280;
-    uint8_t g_print_ir_value = 0;
-
-    dbg.writeMemory(runtimeBase + g_print_ir_offset, &g_print_ir_value, sizeof(g_print_ir_value));
-
-// __bss:000000000003B281 ??                      g_print_seg     % 1    
-    const uintptr_t g_print_seg_offset = 0x3B281;
-    uint8_t g_print_seg_value = 0;
-
-    dbg.writeMemory(runtimeBase + g_print_seg_offset, &g_print_seg_value, sizeof(g_print_seg_value));
-
-    // __bss:000000000003B282 ??                      g_scribble_translation % 1 
-    const uintptr_t g_scribble_translation_offset = 0x3B282;
-    uint8_t g_scribble_translation_value = 1;
-
-    dbg.writeMemory(runtimeBase + g_scribble_translation_offset, &g_scribble_translation_value,
-                    sizeof(g_scribble_translation_value));
-
-/*
-              if ( (int)sub_1F57C(g_trace_path, 0xFF, "%s.%d", v26, v33) >= 0xFF )
-                ERROR("trace filename too long");
-              g_write_trace = 1;
-
-__bss:000000000003B27F ??                      g_write_trace   % 1   
-
-__bss:000000000003B283                         ; char g_trace_path[256]
-__bss:000000000003B283 ?? ?? ?? ?? ?? ?? ?? ?? g_trace_path    % 0x100 
-*/
-    char trace_path_buffer[256] = {};
-  // extract only the file name from argv[1]
-    std::filesystem::path inputPath(argv[1]);
-    std::string filename = inputPath.filename().string();
-
-    sprintf(trace_path_buffer, "trace.%s.%d", filename.c_str(), child);
-    printf("Setting trace path to: %s\n", trace_path_buffer);
-
-    const uintptr_t g_trace_path_offset = 0x3B283;
-
-    dbg.writeMemory(runtimeBase + g_trace_path_offset, trace_path_buffer, sizeof(trace_path_buffer));
-
-    const uintptr_t g_write_trace_offset = 0x3B27F;
-    uint8_t g_write_trace_value = 1;
-    dbg.writeMemory(runtimeBase + g_write_trace_offset, &g_write_trace_value, sizeof(g_write_trace_value));
-
-    // 3B279 ??                      g_aot_errors_are_fatal
-    const uintptr_t g_aot_errors_are_fatal_offset = 0x3B279;
-    uint8_t g_aot_errors_are_fatal_value = 1;
-
-    dbg.writeMemory(runtimeBase + g_aot_errors_are_fatal_offset, &g_aot_errors_are_fatal_value,
-                    sizeof(g_aot_errors_are_fatal_value));
-
-    // ..
-    const uintptr_t namespace_offset = 0x2CA3F;
-    char namespace_buffer[16] = {};
-
-    uintptr_t namespace_addr = runtimeBase + namespace_offset;
-
-    dbg.readMemory(namespace_addr, namespace_buffer, sizeof(namespace_buffer));
-    LOG("Namespace: %s\n", namespace_buffer);
-
-    if (!dbg.adjustMemoryProtection(namespace_addr, VM_PROT_READ | VM_PROT_WRITE | VM_PROT_COPY,
-                                    sizeof(uint32_t))) {
-        LOG("Failed to adjust memory protection for namespace\n");
-        return 1;
-    }
-
-    namespace_buffer[5] = 'b';
-    dbg.writeMemory(namespace_addr, namespace_buffer, sizeof(namespace_buffer));
-    LOG("Namespace patched to: %s\n", namespace_buffer);
-
-    // re-read to verify
-    char verify_buffer[16] = {};
-    dbg.readMemory(namespace_addr, verify_buffer, sizeof(verify_buffer));
-    LOG("Namespace after patch: %s\n", verify_buffer);
-#endif
     dbg.setBreakpoint(runtimeBase + offsetFinder.offsetExportsFetch_);
     dbg.continueExecution();
     dbg.removeBreakpoint(runtimeBase + offsetFinder.offsetExportsFetch_);
