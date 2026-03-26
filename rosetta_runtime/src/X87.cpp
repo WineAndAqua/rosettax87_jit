@@ -854,7 +854,7 @@ X87ResultStatusWord x87_fistt_i16(X87State const* state) {
     // Get value in ST(0)
     auto [value, statusWord] = state->getStConst(0);
 
-    return {.signedResult = static_cast<int16_t>(value), statusWord};
+    return {.signedResult = static_cast<int16_t>(value), .statusWord = statusWord};
 }
 
 X87ResultStatusWord x87_fistt_i32(X87State const* state) {
@@ -864,7 +864,7 @@ X87ResultStatusWord x87_fistt_i32(X87State const* state) {
     // Get value in ST(0)
     auto [value, statusWord] = state->getStConst(0);
 
-    return {.signedResult = static_cast<int32_t>(value), statusWord};
+    return {.signedResult = static_cast<int32_t>(value), .statusWord = statusWord};
 }
 
 X87ResultStatusWord x87_fistt_i64(X87State const* state) {
@@ -874,7 +874,7 @@ X87ResultStatusWord x87_fistt_i64(X87State const* state) {
     // Get value in ST(0)
     auto [value, statusWord] = state->getStConst(0);
 
-    return {.signedResult = static_cast<int64_t>(value), statusWord};
+    return {.signedResult = static_cast<int64_t>(value), .statusWord = statusWord};
 }
 
 void x87_fisub(X87State* state, int val) {
