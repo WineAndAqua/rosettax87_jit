@@ -145,5 +145,11 @@ RosettaConfig parse_config_from_env() {
     apply_mask_from_env("ROSETTA_X87_DISABLE_FUSIONS", cfg.disabled_fusions_mask,
                         kFusionBits, kFusionCount);
 
+    // If FXCH is disabled, implicitly disable deferred FXCH (OPT-G) to prevent
+    // permutation state from being orphaned when cache runs are truncated.
+    if ((cfg.disabled_ops_mask >> static_cast<int>(OpcodeId::fxch)) & 1u) {
+        cfg.disable_deferred_fxch = 1;
+    }
+
     return cfg;
 }
