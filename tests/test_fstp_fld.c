@@ -207,6 +207,21 @@ static double fstp_fld_same_addr_f64(void) {
     return r;
 }
 
+/* ==== FSTP ST(2) + FLD ST(1) — aliasing: FLD reads slot FSTP wrote ==== */
+static void fstp_fld_reg_reg_alias(double *out0, double *out1) {
+    __asm__ volatile(
+        "fldl %2\n"            /* push 1.0: ST(0)=1, ST(1)=-, ST(2)=- */
+        "fldl %3\n"            /* push 2.0: ST(0)=2, ST(1)=1 */
+        "fldl %4\n"            /* push 3.0: ST(0)=3, ST(1)=2, ST(2)=1 */
+        "fstp %%st(2)\n"       /* ST(2)←3.0, pop → ST(0)=2, ST(1)=3 */
+        "fld %%st(1)\n"        /* push ST(1)=3.0 → ST(0)=3, ST(1)=2, ST(2)=3 */
+        "fstpl %0\n"           /* store 3.0 */
+        "fstpl %1\n"           /* store 2.0 */
+        "fstp %%st(0)\n"       /* discard */
+        : "=m"(*out0), "=m"(*out1)
+        : "m"((double){1.0}), "m"((double){2.0}), "m"((double){3.0}));
+}
+
 /* ==== FSTP m64 + FLD ST(1) (deeper reg source after pop) ==== */
 static void fstp_fld_mem_deepreg(double *out_stored, double *out_top) {
     __asm__ volatile(
@@ -310,6 +325,14 @@ int main(void) {
         check("depth: first stored (3.0)", a, 3.0);
         check("depth: second stored (4.0)", b, 4.0);
         check("depth: remaining ST(0) (2.0)", c, 2.0);
+    }
+
+    /* FSTP ST(2) + FLD ST(1) — aliasing (FLD reads value FSTP wrote) */
+    {
+        double a, b;
+        fstp_fld_reg_reg_alias(&a, &b);
+        check("fstp_reg+fld_reg_alias: FLD reads FSTP-written value", a, 3.0);
+        check("fstp_reg+fld_reg_alias: remaining ST(0)", b, 2.0);
     }
 
     /* FSTP m64 + FLD ST(1) (deeper register source) */

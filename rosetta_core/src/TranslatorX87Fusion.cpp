@@ -1857,24 +1857,25 @@ static auto try_fuse_fstp_fld(TranslationResult* a1, IRInstr* fstp_instr, IRInst
 
     // ── 3b/3c: Store FSTP dest and load FLD value ─────────────────────────
     //
-    // Ordering matters for correctness:
-    //   Register FSTP: load FLD source FIRST, then store FSTP dest.
-    //     (FSTP ST(n) may overwrite the slot FLD ST(m) reads from.)
+    // Ordering matters for correctness — store FSTP dest FIRST in both paths:
+    //   Register FSTP: store FSTP dest FIRST, then load FLD source.
+    //     (FLD ST(m) reads from the post-write stack — when m+1 == n,
+    //      it must see the value FSTP ST(n) just wrote.)
     //   Memory FSTP:   store FSTP dest FIRST, then load FLD source.
     //     (FLD may read from the same address FSTP writes to — e.g. the
     //      f32 truncation idiom: FSTP dword [x]; FLD dword [x].)
 
     if (fstp_is_reg) {
-        // ── Register path: load FLD first, then store FSTP ──────────────
+        // ── Register path: store FSTP first, then load FLD ──────────────
+
+        if (!fstp_is_discard) {
+            emit_store_st(buf, Xbase, Wd_top, resolve_depth(*a1, fstp_reg_depth), Wd_tmp, Dd_st0, Xst_base);
+        }
 
         if (cls.source == kFldReg) {
             emit_load_st(buf, Xbase, Wd_top, resolve_depth(*a1, cls.reg_depth + 1), Wd_tmp, Dd_fld, Xst_base);
         } else {
             emit_fld_value(buf, *a1, cls, fld_instr, Xbase, Wd_top, Wd_tmp, Dd_fld, Xst_base);
-        }
-
-        if (!fstp_is_discard) {
-            emit_store_st(buf, Xbase, Wd_top, resolve_depth(*a1, fstp_reg_depth), Wd_tmp, Dd_st0, Xst_base);
         }
     } else {
         // ── Memory path: store FSTP first, then load FLD ────────────────
